@@ -1,9 +1,9 @@
 export const STORAGE_KEY = 'dayboard.board.v2';
 const LEGACY_KEY = 'dayboard.board.v1';
 export const CARD_WIDTH = 368;
-const MIN_WIDTH = 234;
-const CHILD_INSET = 12;
-const CHILD_GAP = 9;
+const MIN_WIDTH = 216;
+const CHILD_INSET = 22;
+const CHILD_GAP = 22;
 const FRAME_BORDER = 1;
 
 export const statuses = {
@@ -22,7 +22,7 @@ const sampleBoard = {
     { id: 'weekend', text: '### Weekend plans\nAn easy trip out of town.', status: 'todo', parentId: null, position: { x: 409, y: 33 } },
     { id: 'trip', text: '### Find a train\nCompare the morning trains\nand check the return times.', status: 'ongoing', parentId: 'weekend' },
     { id: 'bag', text: 'Pack a bag\n- Water\n- Light jacket', status: 'done', parentId: 'weekend' },
-    { id: 'invoice', text: 'Send the November invoice', status: 'todo', parentId: null, position: { x: 0, y: 476 } },
+    { id: 'invoice', text: 'Send the November invoice', status: 'todo', parentId: null, position: { x: 0, y: 544 } },
   ],
 };
 
@@ -52,7 +52,7 @@ export function migrateBoard(legacy) {
   return { example: false, cards: [...projects, ...tasks] };
 }
 
-function readBoard(key) {
+export function readLocal(key) {
   try {
     const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : null;
@@ -62,14 +62,52 @@ function readBoard(key) {
 }
 
 export function loadBoard() {
-  const saved = readBoard(STORAGE_KEY);
-  if (Array.isArray(saved?.cards)) return saved;
+  const saved = loadSavedBoard();
+  if (saved) return saved;
 
-  const legacy = readBoard(LEGACY_KEY);
+  const legacy = readLocal(LEGACY_KEY);
   if (Array.isArray(legacy?.projects) && Array.isArray(legacy?.tasks) && !legacy.example) {
     return migrateBoard(legacy);
   }
   return sampleBoard;
+}
+
+export function loadSavedBoard() {
+  const saved = readLocal(STORAGE_KEY);
+  if (Array.isArray(saved?.cards)) return saved.example ? sampleBoard : saved;
+  return null;
+}
+
+export function readBackup(text) {
+  const backup = JSON.parse(text);
+  if (backup?.format !== 'dayboard' || backup.version !== 1 || !Array.isArray(backup.cards)) throw new Error('Invalid backup');
+  const cards = new Map();
+  for (const card of backup.cards) {
+    if (!card || typeof card.id !== 'string' || !/^[\w-]+$/.test(card.id) || cards.has(card.id) ||
+      typeof card.text !== 'string' || !Object.hasOwn(statuses, card.status) ||
+      (card.parentId !== null && (typeof card.parentId !== 'string' || !card.parentId)) ||
+      (card.parentId === null && (!Number.isFinite(card.position?.x) || !Number.isFinite(card.position?.y)))) {
+      throw new Error('Invalid card');
+    }
+    const { id, text, status, parentId, position } = card;
+    cards.set(id, { id, text, status, parentId, ...(!parentId && { position: { x: position.x, y: position.y } }) });
+  }
+  const validated = new Set();
+  for (const card of cards.values()) {
+    const path = new Set();
+    for (let current = card; current && !validated.has(current.id); current = cards.get(current.parentId)) {
+      if (path.has(current.id) || (current.parentId && !cards.has(current.parentId))) throw new Error('Invalid hierarchy');
+      path.add(current.id);
+    }
+    for (const id of path) validated.add(id);
+  }
+  return [...cards.values()];
+}
+
+export function importBackup(board, cards) {
+  const imported = new Set(cards.map(card => card.id));
+  const remaining = board.example ? [] : board.cards.filter(card => !imported.has(card.id));
+  return { example: false, cards: [...remaining, ...cards] };
 }
 
 export function cardLines(text) {
@@ -148,7 +186,7 @@ export function getDropTarget(layout, id, point) {
   if (!hit) return null;
 
   const within = point.y - hit.absolute.y;
-  const edge = Math.min(17, hit.bodyHeight / 5);
+  const edge = Math.min(22, hit.bodyHeight / 4);
   if (hit.card.parentId && (within < edge || within >= hit.height - edge)) {
     const parent = layout.get(hit.card.parentId);
     const after = within >= hit.height - edge;

@@ -1,18 +1,20 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Background, ReactFlow, useNodesState, useReactFlow, useViewport } from '@xyflow/react';
-import { CloudOff, LocateFixed, Maximize, Minus, Plus, Type, X } from 'lucide-react';
+import { Archive, CloudOff, LocateFixed, Maximize, Minus, PanelLeft, Plus, Type, X } from 'lucide-react';
 import { BoardActions, StatusIcon, getNodes, nodeTypes } from './BoardNodes.jsx';
 import {
-  CARD_WIDTH, STORAGE_KEY, availablePosition, cardLines, getDropTarget,
-  layoutCards, loadBoard, placeCard, removeCard,
+  CARD_WIDTH, STORAGE_KEY, availablePosition, cardLines, getDropTarget, importBackup,
+  layoutCards, loadBoard, loadSavedBoard, placeCard, readBackup, readLocal, removeCard, statuses,
 } from './board.js';
 
 const fitOptions = { padding: 0.15, maxZoom: 1.04 };
+const SIDEBAR_KEY = 'dayboard.sidebar-hidden';
+const VIEW_KEY = 'dayboard.viewport';
 
-function ResumePanel({ cards, locateCard }) {
+function ResumePanel({ cards, locateCard, hidden }) {
   const ongoing = cards.filter(card => card.status === 'ongoing');
   return (
-    <aside className="sidebar" aria-label="Ongoing cards">
+    <aside id="resume-sidebar" className="sidebar" aria-label="Ongoing cards" hidden={hidden}>
       <div className="sidebar-label"><StatusIcon status="ongoing" size={13} /> Ongoing <span>{ongoing.length}</span></div>
       <h2 className="handwritten">Pick up here</h2>
       <div className="resume-list">
@@ -31,6 +33,42 @@ function ResumePanel({ cards, locateCard }) {
         {!ongoing.length && <p className="resume-empty">Ongoing cards stay here so you can pick them up again.</p>}
       </div>
     </aside>
+  );
+}
+
+function StatusLegend() {
+  return (
+    <div className="status-legend" aria-label="Card colors">
+      {Object.entries(statuses).map(([status, label]) => (
+        <span key={status} className={'status-' + status}><i className="status-dot" aria-hidden="true" />{label}</span>
+      ))}
+    </div>
+  );
+}
+
+function BoardData({ download, restore }) {
+  const menu = useRef(null);
+  const picker = useRef(null);
+  return (
+    <details className="board-data" ref={menu}>
+      <summary className="icon-button" aria-label="Board backup" title="Board backup"><Archive size={18} /></summary>
+      <div className="data-menu">
+        <button type="button" onClick={() => {
+          menu.current.open = false;
+          download();
+        }}>Download backup</button>
+        <button type="button" onClick={() => {
+          menu.current.open = false;
+          picker.current.click();
+        }}>Import backup…</button>
+      </div>
+      <input ref={picker} type="file" accept=".json,application/json" hidden aria-label="Backup file"
+        onChange={event => {
+          const file = event.target.files[0];
+          event.target.value = '';
+          if (file) restore(file);
+        }} />
+    </details>
   );
 }
 
@@ -56,28 +94,63 @@ export default function App() {
   const [dragging, setDragging] = useState(null);
   const [located, setLocated] = useState(null);
   const [undo, setUndo] = useState(null);
+  const [notice, setNotice] = useState('');
   const [savedLocally, setSavedLocally] = useState(true);
+  const [sidebarHidden, setSidebarHidden] = useState(() => readLocal(SIDEBAR_KEY) === true);
+  const [initialView] = useState(() => {
+    const saved = readLocal(VIEW_KEY);
+    const hasSaved = Number.isFinite(saved?.x) && Number.isFinite(saved?.y) && Number.isFinite(saved?.zoom) &&
+      saved.zoom >= 0.2 && saved.zoom <= 2.2;
+    return {
+      fit: !hasSaved && !window.matchMedia('(max-width: 700px)').matches,
+      viewport: hasSaved ? saved : { x: 15, y: 58, zoom: Math.min(0.92, (window.innerWidth - 30) / CARD_WIDTH) },
+    };
+  });
 
-  const [initialView] = useState(() => ({
-    small: window.matchMedia('(max-width: 700px)').matches,
-    viewport: { x: 15, y: 58, zoom: Math.min(0.92, (window.innerWidth - 30) / CARD_WIDTH) },
-  }));
-  const layout = useMemo(() => layoutCards(draft ? [...board.cards, draft] : board.cards, measurements), [board, draft, measurements]);
+  const layout = useMemo(() => {
+    const cards = draft && !board.cards.some(card => card.id === draft.id) ? [...board.cards, draft] : board.cards;
+    return layoutCards(cards, measurements);
+  }, [board, draft, measurements]);
   const graph = useMemo(() => getNodes(layout, draft?.id), [layout, draft]);
   const [nodes, setNodes, applyChanges] = useNodesState(graph);
   const canvas = useRef(null);
-  const leavingEditor = useRef(false);
+  const latestBoard = useRef(board);
+  const storageWritable = useRef(true);
+  const afterImport = useRef(false);
   const flow = useReactFlow();
 
   useLayoutEffect(() => setNodes(graph), [graph, setNodes]);
-  useLayoutEffect(() => {
+
+  const persist = useCallback(next => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(board));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      storageWritable.current = true;
       setSavedLocally(true);
     } catch {
+      storageWritable.current = false;
       setSavedLocally(false);
     }
-  }, [board]);
+  }, []);
+
+  useLayoutEffect(() => {
+    persist(latestBoard.current);
+    const sync = event => {
+      if (event.key !== STORAGE_KEY || !storageWritable.current) return;
+      const incoming = loadSavedBoard();
+      if (!incoming) return;
+      latestBoard.current = incoming;
+      setBoard(incoming);
+      setUndo(null);
+    };
+    window.addEventListener('storage', sync);
+    return () => window.removeEventListener('storage', sync);
+  }, [persist]);
+
+  useEffect(() => {
+    if (!afterImport.current || nodes !== graph) return;
+    afterImport.current = false;
+    if (nodes.length) flow.fitView({ ...fitOptions, duration: 180 });
+  }, [nodes, graph, flow]);
 
   const measure = useCallback((id, width, height) => {
     setMeasurements(current => current[id]?.height === height && current[id]?.width === width
@@ -85,9 +158,47 @@ export default function App() {
       : { ...current, [id]: { width, height } });
   }, []);
 
-  function updateBoard(updater) {
-    setUndo(null);
-    setBoard(current => updater({ ...current, example: false }));
+  function updateBoard(updater, undoMessage) {
+    const current = (storageWritable.current && loadSavedBoard()) || latestBoard.current;
+    const updated = updater(current);
+    if (updated === current) return;
+    const next = { ...updated, example: false };
+    latestBoard.current = next;
+    setBoard(next);
+    persist(next);
+    setUndo(undoMessage ? { board: current, message: undoMessage } : null);
+    setNotice('');
+  }
+
+  function toggleSidebar() {
+    const next = !sidebarHidden;
+    setSidebarHidden(next);
+    try { localStorage.setItem(SIDEBAR_KEY, JSON.stringify(next)); } catch { /* The toggle works for this visit. */ }
+  }
+
+  function saveViewport(_, viewport) {
+    try { localStorage.setItem(VIEW_KEY, JSON.stringify(viewport)); } catch { /* Board saving is handled independently. */ }
+  }
+
+  function downloadBackup() {
+    const current = (storageWritable.current && loadSavedBoard()) || latestBoard.current;
+    const file = new Blob([JSON.stringify({ format: 'dayboard', version: 1, cards: current.cards }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(file);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'dayboard-backup.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function restoreBackup(file) {
+    try {
+      const cards = readBackup(await file.text());
+      afterImport.current = true;
+      updateBoard(current => importBackup(current, cards), 'Backup imported');
+    } catch {
+      setNotice('Could not open this Dayboard backup.');
+    }
   }
 
   function reveal(position, width, height, center = false) {
@@ -140,16 +251,25 @@ export default function App() {
     reveal(entry.absolute, entry.width, Math.min(entry.bodyHeight + 70, 290));
   }
 
-  function finishEditing(id, text) {
+  function writeText(id, text) {
+    updateBoard(current => {
+      const existing = current.cards.find(card => card.id === id);
+      if (existing) return existing.text === text ? current : {
+        ...current, cards: current.cards.map(card => card.id === id ? { ...card, text } : card),
+      };
+      return draft?.id === id && text.trim() ? { ...current, cards: [...current.cards, { ...draft, text }] } : current;
+    });
+  }
+
+  function finishEditing(id, text, original) {
     setEditing(current => current === id ? null : current);
     if (draft?.id === id) {
-      if (text?.trim()) updateBoard(current => ({ ...current, cards: [...current.cards, { ...draft, text }] }));
+      if (text?.trim()) writeText(id, text);
+      else updateBoard(current => current.cards.some(card => card.id === id) ? removeCard(current, layout, id) : current);
       setDraft(null);
       return;
     }
-
-    if (text === null || text === board.cards.find(card => card.id === id)?.text) return;
-    updateBoard(current => ({ ...current, cards: current.cards.map(card => card.id === id ? { ...card, text } : card) }));
+    if (text === null) writeText(id, original);
   }
 
   useEffect(() => {
@@ -165,12 +285,12 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  function paneClick(event) {
-    if (leavingEditor.current || editing) {
-      canvas.current.querySelector('.card-editor textarea')?.blur();
-      leavingEditor.current = false;
-      return;
-    }
+  function paneClick() {
+    canvas.current.querySelector('.card-editor textarea')?.blur();
+  }
+
+  function paneDoubleClick(event) {
+    if (!event.target.classList.contains('react-flow__pane') || editing) return;
     startDraft(null, { x: event.clientX, y: event.clientY });
   }
 
@@ -179,8 +299,7 @@ export default function App() {
   }
 
   function remove(id) {
-    setUndo({ board, message: 'Card removed' });
-    setBoard({ ...removeCard(board, layout, id), example: false });
+    updateBoard(current => removeCard(current, layout, id), 'Card removed');
   }
 
   function locateCard(id) {
@@ -212,40 +331,54 @@ export default function App() {
   }
 
   function clearExample() {
-    setUndo({ board, message: 'Example cleared' });
-    setBoard({ example: false, cards: [] });
+    updateBoard(current => current.example ? { example: false, cards: [] } : current, 'Example cleared');
+  }
+
+  function undoChange() {
+    const previous = undo.board;
+    latestBoard.current = previous;
+    setBoard(previous);
+    persist(previous);
+    setUndo(null);
   }
 
   return (
     <BoardActions.Provider value={{
-      editing, draftId: draft?.id, startDraft, editCard, finishEditing, updateStatus,
+      editing, draftId: draft?.id, startDraft, editCard, writeText, finishEditing, updateStatus,
       remove, measure, dropTarget, dragging, located,
     }}>
       <div className="app">
         <header className="topbar">
           <div className="brand handwritten">
+            <button type="button" className="icon-button sidebar-toggle" onClick={toggleSidebar}
+              aria-label={sidebarHidden ? 'Show sidebar' : 'Hide sidebar'} aria-expanded={!sidebarHidden}
+              aria-controls="resume-sidebar" title={sidebarHidden ? 'Show sidebar' : 'Hide sidebar'}>
+              <PanelLeft size={19} />
+            </button>
             <img src="/dayboard.svg" alt="" width="36" height="36" />
             <span>Dayboard</span>
           </div>
+          <StatusLegend />
           <div className="topbar-actions">
             <span className={'storage-label' + (savedLocally ? '' : ' storage-error')} role="status">
               {savedLocally ? <span className="saved-dot" /> : <CloudOff size={15} />}
               {savedLocally ? 'Saved in this browser' : 'Local saving unavailable'}
             </span>
             {board.example && <button className="text-button" title="Clear the example cards" onClick={clearExample}>Start fresh</button>}
+            <BoardData download={downloadBackup} restore={restoreBackup} />
             <button className="new-card" onClick={() => startDraft()} title="New card (N)"><Plus size={18} /> Card</button>
           </div>
         </header>
-        <div className="workspace">
-          <ResumePanel cards={board.cards} locateCard={locateCard} />
+        <div className={'workspace' + (sidebarHidden ? ' sidebar-hidden' : '')}>
+          <ResumePanel cards={board.cards} locateCard={locateCard} hidden={sidebarHidden} />
           <main className="canvas" ref={canvas} aria-label="Card canvas"
-            onPointerDownCapture={() => { leavingEditor.current = Boolean(editing); }}
+            onDoubleClick={paneDoubleClick}
             onPointerCancel={() => { setDropTarget(null); setDragging(null); }}>
             <ReactFlow nodes={nodes} edges={[]} nodeTypes={nodeTypes} onNodesChange={applyChanges}
               onNodeDragStart={(_, node) => { setDragging(node.id); setLocated(null); }}
               onNodeDrag={moveNode} onNodeDragStop={finishDrag} onPaneClick={paneClick}
               paneClickDistance={5} nodeDragThreshold={4} nodeClickDistance={4}
-              fitView={!initialView.small} fitViewOptions={fitOptions} defaultViewport={initialView.viewport}
+              fitView={initialView.fit} fitViewOptions={fitOptions} defaultViewport={initialView.viewport} onMoveEnd={saveViewport}
               minZoom={0.2} maxZoom={2.2} deleteKeyCode={null} elementsSelectable={false}
               nodesConnectable={false} zoomOnDoubleClick={false} proOptions={{ hideAttribution: true }}>
               <Background gap={22} size={1.35} color="#cfc9bd" />
@@ -253,13 +386,13 @@ export default function App() {
             </ReactFlow>
             {!board.cards.length && !draft && <div className="empty-board">
               <div className="empty-icon"><Type size={27} /></div>
-              <h1 className="handwritten">Click anywhere to write</h1>
+              <h1 className="handwritten">Double-click to write</h1>
             </div>}
-            <div className="canvas-hint"><Type size={14} /> <span>Click to write <span className="hint-dot">·</span> Drop onto a card to nest</span></div>
-            {undo && <div className="undo-toast" role="status">
-              <span>{undo.message}</span>
-              <button className="text-button" onClick={() => { setBoard(undo.board); setUndo(null); }}>Undo</button>
-              <button className="icon-button" aria-label="Dismiss message" onClick={() => setUndo(null)}><X size={15} /></button>
+            <div className="canvas-hint"><Type size={14} /> <span>Double-click to write <span className="hint-dot">·</span> Drop onto a card to nest</span></div>
+            {(notice || undo) && <div className="undo-toast" role="status">
+              <span>{notice || undo.message}</span>
+              {!notice && <button className="text-button" onClick={undoChange}>Undo</button>}
+              <button className="icon-button" aria-label="Dismiss message" onClick={() => { setNotice(''); setUndo(null); }}><X size={15} /></button>
             </div>}
           </main>
         </div>

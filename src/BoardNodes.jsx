@@ -1,7 +1,7 @@
 import React, { createContext, memo, useContext, useLayoutEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
-import { Check, ChevronDown, Circle, GripVertical, Plus, Trash2, Type } from 'lucide-react';
+import { Check, Circle, GripHorizontal, Plus, Trash2, Type } from 'lucide-react';
 import { cardLabel, insertionLine, statuses } from './board.js';
 
 export const BoardActions = createContext(null);
@@ -20,8 +20,8 @@ export function StatusIcon({ status, size = 14 }) {
 
 function StatusSelect({ card, label, onChange }) {
   return (
-    <label className="status-select nodrag nopan">
-      <StatusIcon status={card.status} /><span>{statuses[card.status]}</span><ChevronDown size={12} strokeWidth={2.4} />
+    <label className="status-select nodrag nopan" title="Change status">
+      <span className="status-dot" aria-hidden="true" />
       <select aria-label={label + ' status'} value={card.status} onChange={event => onChange(event.target.value)}>
         {statusEntries.map(([id, title]) => <option key={id} value={id}>{title}</option>)}
       </select>
@@ -47,8 +47,9 @@ function CardText({ text, label, edit }) {
   );
 }
 
-function CardEditor({ initialText, finish }) {
+function CardEditor({ initialText, onWrite, finish }) {
   const [text, setText] = useState(initialText);
+  const original = useRef(initialText);
   const field = useRef(null);
   const finished = useRef(false);
 
@@ -61,13 +62,16 @@ function CardEditor({ initialText, finish }) {
   function complete(commit) {
     if (finished.current) return;
     finished.current = true;
-    finish(commit ? text : null);
+    finish(commit ? text : null, original.current);
   }
 
   return (
     <div className="card-editor nodrag nopan nowheel handwritten" data-text={text}>
       <textarea ref={field} aria-label="Card text" rows={2} placeholder="Write something…" value={text}
-        onChange={event => setText(event.target.value)} onBlur={() => complete(true)}
+        onChange={event => {
+          setText(event.target.value);
+          onWrite(event.target.value);
+        }} onBlur={() => complete(true)}
         onKeyDown={event => {
           if (event.nativeEvent.isComposing) return;
           if (event.key === 'Escape' || (event.key === 'Enter' && (event.ctrlKey || event.metaKey))) {
@@ -83,7 +87,7 @@ function CardEditor({ initialText, finish }) {
 function CardNode({ data }) {
   const entry = data.entry;
   const { card, width } = entry;
-  const { editing, draftId, startDraft, editCard, finishEditing, updateStatus, remove, measure, dropTarget, dragging, located } = useContext(BoardActions);
+  const { editing, draftId, startDraft, editCard, writeText, finishEditing, updateStatus, remove, measure, dropTarget, dragging, located } = useContext(BoardActions);
   const isDraft = card.id === draftId;
   const isEditing = editing === card.id;
   const isCarried = dragging === card.id || entry.ancestors.includes(dragging);
@@ -112,18 +116,19 @@ function CardNode({ data }) {
     <article className={'note-card status-' + card.status + ' ' + stateClasses} style={{ height: entry.height }}>
       <div className="card-body" ref={body}>
         {isEditing
-          ? <CardEditor initialText={card.text} finish={text => finishEditing(card.id, text)} />
+          ? <CardEditor initialText={card.text} onWrite={text => writeText(card.id, text)}
+              finish={(text, original) => finishEditing(card.id, text, original)} />
           : <CardText text={card.text} label={label} edit={() => editCard(card.id)} />}
         {isDraft ? (
           <div className="card-footer draft-hint"><Type size={15} /> <span>Click away to save</span></div>
         ) : (
-          <div className="card-footer">
+          <div className="card-footer card-drag-area" title="Drag card">
             <StatusSelect card={card} label={label} onChange={value => updateStatus(card.id, value)} />
+            <span className="drag-grip" aria-hidden="true"><GripHorizontal size={17} /></span>
             <button type="button" className="icon-button card-action nodrag nopan" aria-label={'Add card under: ' + label}
               title="Add a card underneath" onClick={() => startDraft(card.id)}><Plus size={17} /></button>
             <button type="button" className="icon-button card-action remove-card nodrag nopan" aria-label={'Delete card: ' + label}
               title="Remove card" onClick={() => remove(card.id)}><Trash2 size={14} /></button>
-            <span className="drag-grip" title="Drag card"><GripVertical size={17} /></span>
           </div>
         )}
       </div>
@@ -139,6 +144,7 @@ export function getNodes(layout, draftId) {
     id: entry.card.id,
     type: 'card',
     parentId: entry.card.parentId || undefined,
+    dragHandle: '.card-drag-area',
     position: entry.position,
     initialWidth: entry.width,
     initialHeight: entry.height,
