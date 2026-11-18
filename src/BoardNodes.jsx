@@ -87,7 +87,7 @@ function CardEditor({ initialText, onWrite, finish }) {
 function CardNode({ data }) {
   const entry = data.entry;
   const { card, width } = entry;
-  const { editing, draftId, startDraft, editCard, writeText, finishEditing, updateStatus, remove, measure, dropTarget, dragging, located } = useContext(BoardActions);
+  const { editing, draftId, startDraft, editCard, writeText, finishEditing, updateStatus, remove, measure, dropTarget, dragging, located, selected } = useContext(BoardActions);
   const isDraft = card.id === draftId;
   const isEditing = editing === card.id;
   const isCarried = dragging === card.id || entry.ancestors.includes(dragging);
@@ -108,6 +108,7 @@ function CardNode({ data }) {
     isEditing && 'writing',
     receiving && 'receiving',
     isCarried && 'carried',
+    selected.has(card.id) && 'area-selected',
     located === card.id && 'located',
     entry.children.length && 'has-children',
   ].filter(Boolean).join(' ');

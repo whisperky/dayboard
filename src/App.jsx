@@ -2,9 +2,10 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { Background, ReactFlow, useNodesState, useReactFlow, useViewport } from '@xyflow/react';
 import { Archive, CloudOff, LocateFixed, Maximize, Minus, PanelLeft, Plus, Type, X } from 'lucide-react';
 import { BoardActions, StatusIcon, getNodes, nodeTypes } from './BoardNodes.jsx';
+import { useAreaSelection } from './useAreaSelection.js';
 import {
   CARD_WIDTH, STORAGE_KEY, availablePosition, cardLines, getDropTarget, importBackup,
-  layoutCards, loadBoard, loadSavedBoard, placeCard, readBackup, readLocal, removeCard, statuses,
+  layoutCards, loadBoard, loadSavedBoard, placeCard, readBackup, readLocal, removeCard, removeCards, statuses,
 } from './board.js';
 
 const fitOptions = { padding: 0.15, maxZoom: 1.04 };
@@ -118,6 +119,8 @@ export default function App() {
   const storageWritable = useRef(true);
   const afterImport = useRef(false);
   const flow = useReactFlow();
+  const selection = useAreaSelection(flow, layout, draft?.id);
+  const selectionCount = board.cards.filter(card => selection.selected.has(card.id)).length;
 
   useLayoutEffect(() => setNodes(graph), [graph, setNodes]);
 
@@ -222,6 +225,7 @@ export default function App() {
   }
 
   function startDraft(parentId = null, point = null) {
+    selection.clear();
     const bounds = canvas.current.getBoundingClientRect();
     const zoom = flow.getZoom();
     const origin = flow.screenToFlowPosition(point || {
@@ -245,6 +249,7 @@ export default function App() {
   }
 
   function editCard(id) {
+    selection.clear();
     const entry = layout.get(id);
     setEditing(id);
     setLocated(null);
@@ -274,9 +279,21 @@ export default function App() {
 
   useEffect(() => {
     function onKey(event) {
+      if (event.defaultPrevented || editing || event.target.closest?.('input, textarea, select, [contenteditable]')) return;
+      if (selectionCount && (event.key === 'Delete' || event.key === 'Backspace')) {
+        event.preventDefault();
+        updateBoard(current => removeCards(current, layout, selection.selected),
+          selectionCount === 1 ? 'Card removed' : selectionCount + ' cards removed');
+        selection.clear();
+        return;
+      }
+      if (selectionCount && event.key === 'Escape') {
+        selection.clear();
+        return;
+      }
       if (
-        event.key.toLowerCase() !== 'n' || editing || event.metaKey || event.ctrlKey || event.altKey ||
-        event.shiftKey || event.repeat || event.target.closest('input, textarea, select, button, [role=button], [contenteditable]')
+        event.key.toLowerCase() !== 'n' || event.metaKey || event.ctrlKey || event.altKey ||
+        event.shiftKey || event.repeat || event.target.closest?.('button, [role=button]')
       ) return;
       event.preventDefault();
       startDraft();
@@ -286,11 +303,12 @@ export default function App() {
   });
 
   function paneClick() {
+    selection.clear();
     canvas.current.querySelector('.card-editor textarea')?.blur();
   }
 
   function paneDoubleClick(event) {
-    if (!event.target.classList.contains('react-flow__pane') || editing) return;
+    if (!event.target.classList.contains('react-flow__pane') || editing || event.ctrlKey) return;
     startDraft(null, { x: event.clientX, y: event.clientY });
   }
 
@@ -345,7 +363,7 @@ export default function App() {
   return (
     <BoardActions.Provider value={{
       editing, draftId: draft?.id, startDraft, editCard, writeText, finishEditing, updateStatus,
-      remove, measure, dropTarget, dragging, located,
+      remove, measure, dropTarget, dragging, located, selected: selection.selected,
     }}>
       <div className="app">
         <header className="topbar">
@@ -372,8 +390,9 @@ export default function App() {
         <div className={'workspace' + (sidebarHidden ? ' sidebar-hidden' : '')}>
           <ResumePanel cards={board.cards} locateCard={locateCard} hidden={sidebarHidden} />
           <main className="canvas" ref={canvas} aria-label="Card canvas"
+            {...selection.handlers}
             onDoubleClick={paneDoubleClick}
-            onPointerCancel={() => { setDropTarget(null); setDragging(null); }}>
+            onPointerCancel={() => { selection.cancel(); setDropTarget(null); setDragging(null); }}>
             <ReactFlow nodes={nodes} edges={[]} nodeTypes={nodeTypes} onNodesChange={applyChanges}
               onNodeDragStart={(_, node) => { setDragging(node.id); setLocated(null); }}
               onNodeDrag={moveNode} onNodeDragStop={finishDrag} onPaneClick={paneClick}
@@ -384,11 +403,15 @@ export default function App() {
               <Background gap={22} size={1.35} color="#cfc9bd" />
               <ZoomControls />
             </ReactFlow>
+            {selection.box && <div className="area-selection" aria-hidden="true" style={selection.box} />}
             {!board.cards.length && !draft && <div className="empty-board">
               <div className="empty-icon"><Type size={27} /></div>
               <h1 className="handwritten">Double-click to write</h1>
             </div>}
-            <div className="canvas-hint"><Type size={14} /> <span>Double-click to write <span className="hint-dot">·</span> Drop onto a card to nest</span></div>
+            <div className="canvas-hint" aria-live="polite"><Type size={14} /> {selectionCount
+              ? <span>{selectionCount} selected <span className="hint-dot">·</span> Delete to remove</span>
+              : <span>Double-click to write <span className="hint-dot">·</span> Ctrl+drag to select</span>}
+            </div>
             {(notice || undo) && <div className="undo-toast" role="status">
               <span>{notice || undo.message}</span>
               {!notice && <button className="text-button" onClick={undoChange}>Undo</button>}

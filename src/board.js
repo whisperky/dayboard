@@ -222,15 +222,44 @@ export function placeCard(board, layout, id, target, position) {
 }
 
 export function removeCard(board, layout, id) {
-  const entry = layout.get(id);
-  const children = entry.children.map(({ card, absolute }) => ({
-    ...card,
-    parentId: entry.card.parentId,
-    ...(!entry.card.parentId && { position: absolute }),
-  }));
+  return removeCards(board, layout, new Set([id]));
+}
+
+export function cardsInArea(layout, start, end, excluded) {
+  const left = Math.min(start.x, end.x);
+  const right = Math.max(start.x, end.x);
+  const top = Math.min(start.y, end.y);
+  const bottom = Math.max(start.y, end.y);
+  const selected = new Set();
+  for (const { card, absolute, width, height } of layout.values()) {
+    if (card.id !== excluded && absolute.x >= left && absolute.y >= top &&
+      absolute.x + width <= right && absolute.y + height <= bottom) selected.add(card.id);
+  }
+  return selected;
+}
+
+export function removeCards(board, layout, selected) {
+  if (!board.cards.some(card => selected.has(card.id))) return board;
+  const children = new Map();
+  for (const card of board.cards) {
+    if (!selected.has(card.parentId)) continue;
+    const siblings = children.get(card.parentId) || [];
+    siblings.push(card);
+    children.set(card.parentId, siblings);
+  }
+
+  let currentLayout;
+  function promote(card, parentId) {
+    if (selected.has(card.id)) return (children.get(card.id) || []).flatMap(child => promote(child, parentId));
+    if (card.parentId === parentId) return [card];
+    if (parentId) return [{ ...card, parentId }];
+    const position = layout.get(card.id)?.absolute ?? (currentLayout ??= layoutCards(board.cards)).get(card.id).absolute;
+    return [{ ...card, parentId, position }];
+  }
+
   return {
     ...board,
-    cards: board.cards.flatMap(card => card.id === id ? children : card.parentId === id ? [] : [card]),
+    cards: board.cards.flatMap(card => selected.has(card.parentId) ? [] : promote(card, card.parentId)),
   };
 }
 

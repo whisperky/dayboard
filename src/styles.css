@@ -121,6 +121,8 @@ svg { flex-shrink: 0; }
 .note-card.has-children { box-shadow: inset 4px 0 var(--accent), 0 4px 9px #372c2115; }
 .note-card.has-children > .card-body { border-bottom: 1px dashed var(--border); }
 .note-card.receiving, .note-card.located { outline: 2px solid var(--purple); outline-offset: 2px; }
+.note-card.area-selected { outline: 2px solid var(--purple); outline-offset: 3px; }
+.area-selection { position: absolute; z-index: 12500; pointer-events: none; border: 1px solid var(--purple); background: #6750db33; }
 .note-card.writing { outline: 2px solid var(--purple); outline-offset: 2px; box-shadow: inset 4px 0 var(--accent), 0 7px 20px #3b29601f; }
 .card-body { padding: 13px 13px 8px 15px; }
 .card-copy, .card-editor { font-size: 20px; line-height: 1.38; overflow-wrap: anywhere; }
