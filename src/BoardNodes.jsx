@@ -1,9 +1,16 @@
-import React, { createContext, useContext, useLayoutEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, Circle, FolderClosed, GripVertical, Pencil, Plus, Trash2, Type, X } from 'lucide-react';
-import { CARD_WIDTH, PROJECT_INSET, TASK_GAP, TASK_HEIGHT, projectHeight, statuses, taskSlot } from './board.js';
+import React, { createContext, memo, useContext, useLayoutEffect, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
+import { Check, ChevronDown, Circle, GripVertical, Plus, Trash2, Type } from 'lucide-react';
+import { cardLabel, insertionLine, statuses } from './board.js';
 
 export const BoardActions = createContext(null);
-export const statusEntries = Object.entries(statuses);
+const statusEntries = Object.entries(statuses);
+const markdownPlugins = [remarkBreaks];
+const markdownComponents = {
+  a: ({ children }) => <span className="markdown-link">{children}</span>,
+  img: ({ alt }) => alt || null,
+};
 
 export function StatusIcon({ status, size = 14 }) {
   if (status === 'done') return <Check size={size} strokeWidth={2.8} />;
@@ -11,239 +18,134 @@ export function StatusIcon({ status, size = 14 }) {
   return <Circle size={size - 1} strokeWidth={2.1} />;
 }
 
-function StatusSelect({ task, onChange }) {
+function StatusSelect({ card, label, onChange }) {
   return (
-    <label className={'status-select nodrag nopan status-' + task.status}>
-      <StatusIcon status={task.status} />
-      <span>{statuses[task.status]}</span>
-      <ChevronDown size={12} strokeWidth={2.4} />
-      <select aria-label={task.title + ' status'} value={task.status} onChange={event => onChange(event.target.value)}>
+    <label className="status-select nodrag nopan">
+      <StatusIcon status={card.status} /><span>{statuses[card.status]}</span><ChevronDown size={12} strokeWidth={2.4} />
+      <select aria-label={label + ' status'} value={card.status} onChange={event => onChange(event.target.value)}>
         {statusEntries.map(([id, title]) => <option key={id} value={id}>{title}</option>)}
       </select>
     </label>
   );
 }
 
-function InlineText({ value, label, placeholder, save, isNote = false }) {
-  const [editing, setEditing] = useState(false);
-  const [text, setText] = useState(value);
-  const trigger = useRef(null);
-  const field = useRef(null);
-  const restoreFocus = useRef(false);
+const MarkdownText = memo(function MarkdownText({ text }) {
+  return <ReactMarkdown skipHtml remarkPlugins={markdownPlugins} components={markdownComponents}>{text}</ReactMarkdown>;
+});
 
-  useLayoutEffect(() => {
-    if (editing) {
-      field.current.focus({ preventScroll: true });
-      field.current.select();
-    } else if (restoreFocus.current) {
-      restoreFocus.current = false;
-      trigger.current.focus({ preventScroll: true });
-    }
-  }, [editing]);
-
-  function finish(commit, focus = false) {
-    const next = text.trim();
-    if (commit && (isNote || next) && next !== value) save(next);
-    restoreFocus.current = focus;
-    setEditing(false);
-  }
-
-  if (editing) {
-    return <input ref={field} className="inline-input nodrag nopan" aria-label={label} value={text}
-      placeholder={placeholder} maxLength={isNote ? 240 : 120} onChange={event => setText(event.target.value)}
-      onBlur={() => finish(true)}
-      onKeyDown={event => {
-        if (event.nativeEvent.isComposing) return;
-        if (event.key !== 'Enter' && event.key !== 'Escape') return;
-        event.preventDefault();
-        event.stopPropagation();
-        finish(event.key === 'Enter', true);
-      }}
-    />;
-  }
-
+function CardText({ text, label, edit }) {
   return (
-    <button ref={trigger} type="button" className="inline-text nodrag nopan"
-      title={value || placeholder} aria-label={value ? label + ': ' + value : placeholder}
-      onClick={() => {
-        setText(value);
-        setEditing(true);
+    <div className="card-copy handwritten nodrag nopan" role="button" tabIndex={0} aria-label={'Edit card: ' + label}
+      onClick={edit} onKeyDown={event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          edit();
+        }
       }}>
-      <span>{value || placeholder}</span>
-      <Pencil size={12} className="inline-pencil" aria-hidden="true" />
-    </button>
+      {text ? <MarkdownText text={text} /> : <span className="placeholder">Write something…</span>}
+    </div>
   );
 }
 
-function DeleteButton({ label, onClick }) {
-  return <button type="button" className="icon-button card-delete nodrag nopan" aria-label={label} title={label} onClick={onClick}>
-    <Trash2 size={14} />
-  </button>;
+function CardEditor({ initialText, finish }) {
+  const [text, setText] = useState(initialText);
+  const field = useRef(null);
+  const finished = useRef(false);
+
+  useLayoutEffect(() => {
+    const textarea = field.current;
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }, []);
+
+  function complete(commit) {
+    if (finished.current) return;
+    finished.current = true;
+    finish(commit ? text : null);
+  }
+
+  return (
+    <div className="card-editor nodrag nopan nowheel handwritten" data-text={text}>
+      <textarea ref={field} aria-label="Card text" rows={2} placeholder="Write something…" value={text}
+        onChange={event => setText(event.target.value)} onBlur={() => complete(true)}
+        onKeyDown={event => {
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === 'Escape' || (event.key === 'Enter' && (event.ctrlKey || event.metaKey))) {
+            event.preventDefault();
+            event.stopPropagation();
+            complete(event.key === 'Enter');
+          }
+        }} />
+    </div>
+  );
 }
 
-function TaskNode({ data }) {
-  const { task } = data;
-  const { updateTask, remove, located } = useContext(BoardActions);
+function CardNode({ data }) {
+  const entry = data.entry;
+  const { card, width } = entry;
+  const { editing, draftId, startDraft, editCard, finishEditing, updateStatus, remove, measure, dropTarget, dragging, located } = useContext(BoardActions);
+  const isDraft = card.id === draftId;
+  const isEditing = editing === card.id;
+  const isCarried = dragging === card.id || entry.ancestors.includes(dragging);
+  const receiving = dropTarget?.parentId === card.id;
+  const label = cardLabel(card.text);
+  const body = useRef(null);
+
+  useLayoutEffect(() => {
+    const element = body.current;
+    const report = () => measure(card.id, width, element.offsetHeight);
+    const observer = new ResizeObserver(report);
+    observer.observe(element);
+    report();
+    return () => observer.disconnect();
+  }, [card.id, width, measure]);
+
+  const stateClasses = [
+    isEditing && 'writing',
+    receiving && 'receiving',
+    isCarried && 'carried',
+    located === card.id && 'located',
+    entry.children.length && 'has-children',
+  ].filter(Boolean).join(' ');
+
   return (
-    <article className={'task-card status-' + task.status + (located === task.id ? ' located' : '')}>
-      <div className="card-text">
-        <InlineText value={task.title} label="Task name" save={title => updateTask(task.id, { title })} />
+    <article className={'note-card status-' + card.status + ' ' + stateClasses} style={{ height: entry.height }}>
+      <div className="card-body" ref={body}>
+        {isEditing
+          ? <CardEditor initialText={card.text} finish={text => finishEditing(card.id, text)} />
+          : <CardText text={card.text} label={label} edit={() => editCard(card.id)} />}
+        {isDraft ? (
+          <div className="card-footer draft-hint"><Type size={15} /> <span>Click away to save</span></div>
+        ) : (
+          <div className="card-footer">
+            <StatusSelect card={card} label={label} onChange={value => updateStatus(card.id, value)} />
+            <button type="button" className="icon-button card-action nodrag nopan" aria-label={'Add card under: ' + label}
+              title="Add a card underneath" onClick={() => startDraft(card.id)}><Plus size={17} /></button>
+            <button type="button" className="icon-button card-action remove-card nodrag nopan" aria-label={'Delete card: ' + label}
+              title="Remove card" onClick={() => remove(card.id)}><Trash2 size={14} /></button>
+            <span className="drag-grip" title="Drag card"><GripVertical size={17} /></span>
+          </div>
+        )}
       </div>
-      <div className="card-note">
-        <InlineText value={task.note || ''} label="Resume note" placeholder="+ Resume note" isNote save={note => updateTask(task.id, { note })} />
-      </div>
-      <div className="task-footer">
-        <StatusSelect task={task} onChange={status => updateTask(task.id, { status })} />
-        <DeleteButton label={'Delete task: ' + task.title} onClick={() => remove(task, 'task')} />
-        <span className="drag-grip" title="Drag task"><GripVertical size={17} /></span>
-      </div>
+      {receiving && <div className="drop-line" style={{ top: insertionLine(entry, dropTarget.slot) }} />}
     </article>
   );
 }
 
-function ProjectNode({ data }) {
-  const { startDraft, updateProject, remove, dropTarget } = useContext(BoardActions);
-  const { project, tasks, hasDraft } = data;
-  const done = tasks.filter(task => task.status === 'done').length;
-  const receiving = dropTarget?.projectId === project.id;
-  const height = projectHeight(tasks.length + Number(hasDraft));
+export const nodeTypes = { card: CardNode };
 
-  return (
-    <section className={'project-node' + (receiving ? ' receiving' : '')} aria-label={project.title} style={{ height }}>
-      <div className="project-heading">
-        <div className="folder-icon" title="Drag project"><FolderClosed size={19} strokeWidth={1.9} /></div>
-        <div className="project-heading-text">
-          <h2><InlineText value={project.title} label="Project name" save={title => updateProject(project.id, title)} /></h2>
-          <span>{tasks.length ? done + ' of ' + tasks.length + ' done' : 'No tasks yet'}</span>
-        </div>
-        <DeleteButton label={'Delete project: ' + project.title} onClick={() => remove(project, 'project')} />
-      </div>
-      {receiving && <div className="drop-line" style={{ top: taskSlot(dropTarget.slot).y - TASK_GAP / 2 }} />}
-      <button className="project-add nodrag nopan" aria-label={'Add task to ' + project.title}
-        onClick={() => startDraft('task', project.id)}><Plus size={16} /> Add task</button>
-    </section>
-  );
+export function getNodes(layout, draftId) {
+  return [...layout.values()].map(entry => ({
+    id: entry.card.id,
+    type: 'card',
+    parentId: entry.card.parentId || undefined,
+    position: entry.position,
+    initialWidth: entry.width,
+    initialHeight: entry.height,
+    style: { width: entry.width, pointerEvents: 'auto', '--card-layer': entry.layer },
+    zIndex: entry.layer,
+    ...(entry.card.id === draftId && { draggable: false, focusable: false }),
+    ariaLabel: cardLabel(entry.card.text) + ' card',
+    data: { entry },
+  }));
 }
-
-function DraftNode({ data }) {
-  const { finishDraft } = useContext(BoardActions);
-  const { draft } = data;
-  const [kind, setKind] = useState(draft.kind);
-  const [text, setText] = useState('');
-  const field = useRef(null);
-  const submitted = useRef(false);
-  const placeholder = kind === 'project' ? 'Name your project…' : 'Type a task…';
-
-  useLayoutEffect(() => {
-    field.current.focus({ preventScroll: true });
-  }, []);
-
-  function finish(commit) {
-    if (submitted.current) return;
-    submitted.current = true;
-    finishDraft(draft, kind, commit ? text.trim() : '');
-  }
-
-  return (
-    <form className="draft-card nodrag nopan" aria-label="New card"
-      onSubmit={event => {
-        event.preventDefault();
-        finish(true);
-      }}
-      onBlur={event => {
-        if (!event.currentTarget.contains(event.relatedTarget)) finish(true);
-      }}
-      onKeyDown={event => {
-        if (event.nativeEvent.isComposing) return;
-        if (event.key !== 'Escape') return;
-        event.preventDefault();
-        event.stopPropagation();
-        finish(false);
-      }}>
-      <div className="draft-input">
-        {kind === 'project' ? <FolderClosed size={18} /> : <Type size={18} />}
-        <input ref={field} aria-label={kind === 'project' ? 'New project name' : 'New task name'} placeholder={placeholder}
-          value={text} maxLength={120} onChange={event => setText(event.target.value)} />
-      </div>
-      <div className="draft-toolbar" onMouseDown={event => {
-        if (event.target.closest('button')) event.preventDefault();
-      }}>
-        {!draft.projectId && <div className="draft-kind" role="group" aria-label="Card type">
-          <button type="button" aria-pressed={kind === 'task'} onClick={() => {
-            setKind('task');
-            field.current.focus();
-          }}>Task</button>
-          <button type="button" aria-pressed={kind === 'project'} onClick={() => {
-            setKind('project');
-            field.current.focus();
-          }}>Project</button>
-        </div>}
-        <button type="button" className="icon-button draft-cancel" aria-label="Cancel new card" title="Cancel" onClick={() => finish(false)}><X size={17} /></button>
-        <button type="submit" className="icon-button draft-save" aria-label="Add card" title="Add card (Enter)" disabled={!text.trim()}><Check size={18} /></button>
-      </div>
-    </form>
-  );
-}
-
-export const nodeTypes = { task: TaskNode, project: ProjectNode, draft: DraftNode };
-
-function taskNode(task, project = null, index = 0) {
-  const width = project ? CARD_WIDTH - PROJECT_INSET * 2 : CARD_WIDTH;
-  return {
-    id: task.id,
-    type: 'task',
-    parentId: project?.id,
-    position: project ? taskSlot(index) : task.position,
-    initialWidth: width,
-    initialHeight: TASK_HEIGHT,
-    style: { width, height: TASK_HEIGHT },
-    zIndex: 2,
-    ariaLabel: task.title + ' task',
-    data: { task },
-  };
-}
-
-export function getNodes(board, draft) {
-  const grouped = new Map(board.projects.map(project => [project.id, []]));
-  const loose = [];
-  for (const task of board.tasks) {
-    if (task.projectId) grouped.get(task.projectId).push(task);
-    else loose.push(taskNode(task));
-  }
-  const nodes = board.projects.flatMap(project => {
-    const tasks = grouped.get(project.id);
-    const hasDraft = draft?.projectId === project.id;
-    return [
-      {
-        id: project.id,
-        type: 'project',
-        position: project.position,
-        initialWidth: CARD_WIDTH,
-        initialHeight: projectHeight(tasks.length + Number(hasDraft)),
-        zIndex: 0,
-        ariaLabel: project.title + ' project',
-        data: { project, tasks, hasDraft },
-      },
-      ...tasks.map((task, index) => taskNode(task, project, index)),
-    ];
-  });
-  nodes.push(...loose);
-  if (draft) {
-    const width = draft.projectId ? CARD_WIDTH - PROJECT_INSET * 2 : CARD_WIDTH;
-    nodes.push({
-      id: draft.id,
-      type: 'draft',
-      parentId: draft.projectId || undefined,
-      position: draft.projectId ? taskSlot(grouped.get(draft.projectId).length) : draft.position,
-      initialWidth: width,
-      initialHeight: TASK_HEIGHT,
-      style: { width, height: TASK_HEIGHT, pointerEvents: 'auto' },
-      zIndex: 30,
-      draggable: false,
-      focusable: false,
-      data: { draft },
-    });
-  }
-  return nodes;
-}
-

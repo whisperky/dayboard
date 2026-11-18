@@ -1,31 +1,34 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Background, ReactFlow, useNodesState, useReactFlow, useViewport } from '@xyflow/react';
-import { CloudOff, FolderClosed, LocateFixed, Maximize, Minus, Plus, Type, X } from 'lucide-react';
+import { CloudOff, LocateFixed, Maximize, Minus, Plus, Type, X } from 'lucide-react';
 import { BoardActions, StatusIcon, getNodes, nodeTypes } from './BoardNodes.jsx';
 import {
-  CARD_WIDTH, EMPTY_PROJECT_HEIGHT, STORAGE_KEY, TASK_HEIGHT, absolutePosition, dropTask, emptyBoard,
-  getDropTarget, getPlacement, loadBoard, makeRoomForProject, removeProject, taskSlot,
+  CARD_WIDTH, STORAGE_KEY, availablePosition, cardLines, getDropTarget,
+  layoutCards, loadBoard, placeCard, removeCard,
 } from './board.js';
 
-const fitOptions = { padding: 0.14, maxZoom: 1.02 };
+const fitOptions = { padding: 0.15, maxZoom: 1.04 };
 
-function ResumePanel({ tasks, locateTask }) {
-  const ongoing = tasks.filter(task => task.status === 'ongoing');
+function ResumePanel({ cards, locateCard }) {
+  const ongoing = cards.filter(card => card.status === 'ongoing');
   return (
-    <aside className="sidebar" aria-label="Ongoing tasks">
-      <div className="sidebar-label"><StatusIcon status="ongoing" size={13} /> ONGOING <span>{ongoing.length}</span></div>
-      <h2>Pick up here</h2>
+    <aside className="sidebar" aria-label="Ongoing cards">
+      <div className="sidebar-label"><StatusIcon status="ongoing" size={13} /> Ongoing <span>{ongoing.length}</span></div>
+      <h2 className="handwritten">Pick up here</h2>
       <div className="resume-list">
-        {ongoing.map(task => (
-          <button className="resume-item" key={task.id} onClick={() => locateTask(task)}>
-            <span className="resume-copy">
-              <strong>{task.title}</strong>
-              {task.note && <span>{task.note}</span>}
-            </span>
-            <LocateFixed size={15} aria-hidden="true" />
-          </button>
-        ))}
-        {!ongoing.length && <div className="resume-empty">Mark a task as ongoing to keep it here.</div>}
+        {ongoing.map(card => {
+          const [title, ...lines] = cardLines(card.text);
+          return (
+            <button className="resume-item" key={card.id} onClick={() => locateCard(card.id)}>
+              <span className="resume-copy handwritten">
+                <strong>{title || 'Untitled card'}</strong>
+                {lines.length > 0 && <span>{lines.join(' ')}</span>}
+              </span>
+              <LocateFixed size={15} aria-hidden="true" />
+            </button>
+          );
+        })}
+        {!ongoing.length && <p className="resume-empty">Ongoing cards stay here so you can pick them up again.</p>}
       </div>
     </aside>
   );
@@ -34,7 +37,6 @@ function ResumePanel({ tasks, locateTask }) {
 function ZoomControls() {
   const { zoomIn, zoomOut, fitView } = useReactFlow();
   const { zoom } = useViewport();
-
   return (
     <div className="zoom-controls" role="group" aria-label="Canvas zoom">
       <button className="icon-button" aria-label="Zoom out" title="Zoom out" onClick={() => zoomOut({ duration: 160 })}><Minus size={17} /></button>
@@ -48,21 +50,26 @@ function ZoomControls() {
 export default function App() {
   const [board, setBoard] = useState(loadBoard);
   const [draft, setDraft] = useState(null);
-  const layout = useMemo(() => getNodes(board, draft), [board, draft]);
-  const [nodes, setNodes, applyChanges] = useNodesState(layout);
+  const [editing, setEditing] = useState(null);
+  const [measurements, setMeasurements] = useState({});
   const [dropTarget, setDropTarget] = useState(null);
+  const [dragging, setDragging] = useState(null);
   const [located, setLocated] = useState(null);
   const [undo, setUndo] = useState(null);
   const [savedLocally, setSavedLocally] = useState(true);
-  const [initialView] = useState(() => {
-    const small = window.matchMedia('(max-width: 700px)').matches;
-    return { small, viewport: { x: 18, y: 74, zoom: Math.min(0.9, (window.innerWidth - 36) / CARD_WIDTH) } };
-  });
 
+  const [initialView] = useState(() => ({
+    small: window.matchMedia('(max-width: 700px)').matches,
+    viewport: { x: 15, y: 58, zoom: Math.min(0.92, (window.innerWidth - 30) / CARD_WIDTH) },
+  }));
+  const layout = useMemo(() => layoutCards(draft ? [...board.cards, draft] : board.cards, measurements), [board, draft, measurements]);
+  const graph = useMemo(() => getNodes(layout, draft?.id), [layout, draft]);
+  const [nodes, setNodes, applyChanges] = useNodesState(graph);
   const canvas = useRef(null);
+  const leavingEditor = useRef(false);
   const flow = useReactFlow();
 
-  useLayoutEffect(() => setNodes(layout), [layout, setNodes]);
+  useLayoutEffect(() => setNodes(graph), [graph, setNodes]);
   useLayoutEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(board));
@@ -72,204 +79,188 @@ export default function App() {
     }
   }, [board]);
 
+  const measure = useCallback((id, width, height) => {
+    setMeasurements(current => current[id]?.height === height && current[id]?.width === width
+      ? current
+      : { ...current, [id]: { width, height } });
+  }, []);
+
   function updateBoard(updater) {
     setUndo(null);
     setBoard(current => updater({ ...current, example: false }));
   }
 
-  function centerCard(position, force = false) {
+  function reveal(position, width, height, center = false) {
     const bounds = canvas.current.getBoundingClientRect();
     const zoom = flow.getZoom();
+    if (center) {
+      const scale = Math.min(Math.max(zoom, 0.86), 1.12, (bounds.width - 32) / width);
+      flow.setCenter(position.x + width / 2, position.y + height / 2, { zoom: scale, duration: 180 });
+      return;
+    }
     const screen = flow.flowToScreenPosition(position);
-    const outside = screen.x < bounds.left + 8 || screen.y < bounds.top + 8 ||
-      screen.x + CARD_WIDTH * zoom > bounds.right - 8 || screen.y + TASK_HEIGHT * zoom > bounds.bottom - 54;
-    if (!outside && !force) return;
-
-    const scale = Math.min(Math.max(zoom, 0.85), 1.1, (bounds.width - 32) / CARD_WIDTH);
-    flow.setCenter(position.x + CARD_WIDTH / 2, position.y + TASK_HEIGHT / 2, { zoom: scale, duration: force ? 180 : 0 });
-  }
-
-  function startDraft(kind, projectId = null, point = null) {
-    setLocated(null);
-    const project = projectId && board.projects.find(item => item.id === projectId);
-    const bounds = canvas.current.getBoundingClientRect();
-    const zoom = flow.getZoom();
-
-    const anchor = point || {
-      x: Math.max(bounds.left + 16, bounds.left + (bounds.width - CARD_WIDTH * zoom) / 2),
-      y: bounds.top + 68,
-    };
-    const origin = flow.screenToFlowPosition(anchor);
-    const height = kind === 'project' ? EMPTY_PROJECT_HEIGHT : TASK_HEIGHT;
-    const position = point ? origin : getPlacement(board, origin, height);
-    setDraft({ id: crypto.randomUUID(), projectId, kind, position });
-
-    if (project) {
-      const index = board.tasks.filter(task => task.projectId === project.id).length;
-      centerCard(absolutePosition(taskSlot(index), project));
-    } else {
-      centerCard(position);
+    const inset = 14;
+    const right = Math.max(bounds.left + inset, bounds.right - inset - width * zoom);
+    const bottom = Math.max(bounds.top + inset, bounds.bottom - 24 - height * zoom);
+    const dx = Math.min(Math.max(screen.x, bounds.left + inset), right) - screen.x;
+    const dy = Math.min(Math.max(screen.y, bounds.top + inset), bottom) - screen.y;
+    if (dx || dy) {
+      const viewport = flow.getViewport();
+      flow.setViewport({ ...viewport, x: viewport.x + dx, y: viewport.y + dy });
     }
   }
 
-  function finishDraft(activeDraft, kind, title) {
-    setDraft(current => current?.id === activeDraft.id ? null : current);
-    if (!title) return;
-    const { id, projectId, position } = activeDraft;
-    updateBoard(current => {
-      if (kind === 'project') return { ...current, projects: [...current.projects, { id, title, position }] };
-      const parent = current.projects.some(project => project.id === projectId) ? projectId : null;
-      const task = { id, title, note: '', status: 'todo', projectId: parent };
-      if (!parent) task.position = position;
-      const next = { ...current, tasks: [...current.tasks, task] };
-      return parent ? makeRoomForProject(next, parent) : next;
+  function startDraft(parentId = null, point = null) {
+    const bounds = canvas.current.getBoundingClientRect();
+    const zoom = flow.getZoom();
+    const origin = flow.screenToFlowPosition(point || {
+      x: Math.max(bounds.left + 14, bounds.left + (bounds.width - CARD_WIDTH * zoom) / 2),
+      y: bounds.top + 66,
     });
+    const parent = parentId ? layout.get(parentId) : null;
+    const id = crypto.randomUUID();
+    const newCard = { id, text: '', status: 'todo', parentId, ...(!parentId && {
+      position: point ? origin : availablePosition(layout, origin, 144),
+    }) };
+    setLocated(null);
+    setDraft(newCard);
+    setEditing(id);
+    if (parent) {
+      const { x, y } = parent.nextChild;
+      reveal({ x: parent.absolute.x + x, y: parent.absolute.y + y }, parent.width - x * 2, 225);
+    } else {
+      reveal(newCard.position, CARD_WIDTH, 225);
+    }
+  }
+
+  function editCard(id) {
+    const entry = layout.get(id);
+    setEditing(id);
+    setLocated(null);
+    reveal(entry.absolute, entry.width, Math.min(entry.bodyHeight + 70, 290));
+  }
+
+  function finishEditing(id, text) {
+    setEditing(current => current === id ? null : current);
+    if (draft?.id === id) {
+      if (text?.trim()) updateBoard(current => ({ ...current, cards: [...current.cards, { ...draft, text }] }));
+      setDraft(null);
+      return;
+    }
+
+    if (text === null || text === board.cards.find(card => card.id === id)?.text) return;
+    updateBoard(current => ({ ...current, cards: current.cards.map(card => card.id === id ? { ...card, text } : card) }));
   }
 
   useEffect(() => {
     function onKey(event) {
       if (
-        event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.repeat ||
-        event.target.closest('input, textarea, select, button, [contenteditable]')
+        event.key.toLowerCase() !== 'n' || editing || event.metaKey || event.ctrlKey || event.altKey ||
+        event.shiftKey || event.repeat || event.target.closest('input, textarea, select, button, [role=button], [contenteditable]')
       ) return;
-      const key = event.key.toLowerCase();
-      if (key !== 'n' && key !== 'p') return;
       event.preventDefault();
-      startDraft(key === 'n' ? 'task' : 'project');
+      startDraft();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  function updateTask(id, fields) {
-    updateBoard(current => ({ ...current, tasks: current.tasks.map(task => task.id === id ? { ...task, ...fields } : task) }));
+  function paneClick(event) {
+    if (leavingEditor.current || editing) {
+      canvas.current.querySelector('.card-editor textarea')?.blur();
+      leavingEditor.current = false;
+      return;
+    }
+    startDraft(null, { x: event.clientX, y: event.clientY });
   }
 
-  function updateProject(id, title) {
-    updateBoard(current => ({ ...current, projects: current.projects.map(project => project.id === id ? { ...project, title } : project) }));
+  function updateStatus(id, status) {
+    updateBoard(current => ({ ...current, cards: current.cards.map(card => card.id === id ? { ...card, status } : card) }));
   }
 
-  function remove(item, type) {
-    const next = type === 'project'
-      ? removeProject(board, item.id)
-      : { ...board, tasks: board.tasks.filter(task => task.id !== item.id) };
-    setDraft(null);
-    setUndo({ board, message: type === 'project' ? 'Project removed' : 'Task removed' });
-    setBoard({ ...next, example: false });
+  function remove(id) {
+    setUndo({ board, message: 'Card removed' });
+    setBoard({ ...removeCard(board, layout, id), example: false });
   }
 
-  function locateTask(task) {
-    const position = flow.getInternalNode(task.id)?.internals.positionAbsolute;
-    if (!position) return;
-    setLocated(task.id);
-    centerCard(position, true);
+  function locateCard(id) {
+    const entry = layout.get(id);
+    setLocated(id);
+    reveal(entry.absolute, entry.width, Math.min(entry.bodyHeight, 275), true);
   }
 
   function targetUnderPointer(event, id) {
     const pointer = event.changedTouches?.[0] ?? event;
     const point = flow.screenToFlowPosition({ x: pointer.clientX, y: pointer.clientY });
-    return getDropTarget(board, id, point);
+    return getDropTarget(layout, id, point);
   }
 
   function moveNode(event, node) {
-    if (node.type !== 'task') return;
     const target = targetUnderPointer(event, node.id);
-    setDropTarget(previous =>
-      previous?.projectId === target?.projectId && previous?.slot === target?.slot ? previous : target
-    );
+    setDropTarget(previous => previous?.parentId === target?.parentId && previous?.slot === target?.slot ? previous : target);
   }
 
   function finishDrag(event, node) {
     setDropTarget(null);
-    if (node.type === 'project') {
-      updateBoard(current => ({
-        ...current, projects: current.projects.map(project =>
-          project.id === node.id ? { ...project, position: node.position } : project
-        ),
-      }));
-      return;
-    }
-    if (node.type !== 'task') return;
-
-    const parent = board.projects.find(project => project.id === node.parentId);
-    const position = absolutePosition(node.position, parent);
+    setDragging(null);
+    const parent = layout.get(node.parentId);
+    const position = parent
+      ? { x: node.position.x + parent.absolute.x, y: node.position.y + parent.absolute.y }
+      : node.position;
     const target = targetUnderPointer(event, node.id);
-    updateBoard(current => dropTask(current, node.id, target, position));
+    updateBoard(current => placeCard(current, layout, node.id, target, position));
   }
 
   function clearExample() {
-    setDraft(null);
     setUndo({ board, message: 'Example cleared' });
-    setBoard(emptyBoard());
+    setBoard({ example: false, cards: [] });
   }
 
   return (
-    <BoardActions.Provider value={{ startDraft, finishDraft, updateTask, updateProject, remove, dropTarget, located }}>
+    <BoardActions.Provider value={{
+      editing, draftId: draft?.id, startDraft, editCard, finishEditing, updateStatus,
+      remove, measure, dropTarget, dragging, located,
+    }}>
       <div className="app">
         <header className="topbar">
-          <div className="brand">
-            <img src="/dayboard.svg" alt="" width="38" height="38" />
+          <div className="brand handwritten">
+            <img src="/dayboard.svg" alt="" width="36" height="36" />
             <span>Dayboard</span>
           </div>
-          <span className={'storage-label' + (savedLocally ? '' : ' storage-error')} role="status">
-            {savedLocally ? <span className="saved-dot" /> : <CloudOff size={15} />}
-            {savedLocally ? 'Saved in this browser' : 'Local saving unavailable'}
-          </span>
+          <div className="topbar-actions">
+            <span className={'storage-label' + (savedLocally ? '' : ' storage-error')} role="status">
+              {savedLocally ? <span className="saved-dot" /> : <CloudOff size={15} />}
+              {savedLocally ? 'Saved in this browser' : 'Local saving unavailable'}
+            </span>
+            {board.example && <button className="text-button" title="Clear the example cards" onClick={clearExample}>Start fresh</button>}
+            <button className="new-card" onClick={() => startDraft()} title="New card (N)"><Plus size={18} /> Card</button>
+          </div>
         </header>
         <div className="workspace">
-          <ResumePanel tasks={board.tasks} locateTask={locateTask} />
-          <main className="board-main">
-            <div className="board-header">
-              <div>
-                <h1>Your board</h1>
-                <div className="board-meta">
-                  <span className="board-instruction">Click to add · Drag to pan</span>
-                  {board.example && <button className="example-reset" title="Clear the example board" onClick={clearExample}>Start fresh</button>}
-                </div>
-              </div>
-              <div className="board-actions">
-                <button className="button secondary" onClick={() => startDraft('project')} title="New project (P)"><FolderClosed size={17} /> <span>New project</span></button>
-                <button className="button primary" onClick={() => startDraft('task')} title="New task (N)"><Plus size={19} /> <span>New task</span></button>
-              </div>
-            </div>
-            <div className="canvas" ref={canvas} aria-label="Task and project canvas" onPointerCancel={() => setDropTarget(null)}>
-              <ReactFlow
-                nodes={nodes}
-                edges={[]}
-                nodeTypes={nodeTypes}
-                onNodesChange={applyChanges}
-                onNodeDrag={moveNode}
-                onNodeDragStop={finishDrag}
-                onPaneClick={event => startDraft('task', null, { x: event.clientX, y: event.clientY })}
-                paneClickDistance={5}
-                nodeDragThreshold={4}
-                nodeClickDistance={4}
-                fitView={!initialView.small}
-                fitViewOptions={fitOptions}
-                defaultViewport={initialView.viewport}
-                minZoom={0.2}
-                maxZoom={2.2}
-                deleteKeyCode={null}
-                elementsSelectable={false}
-                nodesConnectable={false}
-                edgesFocusable={false}
-                zoomOnDoubleClick={false}
-                proOptions={{ hideAttribution: true }}
-              >
-                <Background gap={21} size={1.4} color="#ccc7bd" />
-                <ZoomControls />
-              </ReactFlow>
-              {!nodes.length && <div className="empty-board">
-                <div className="empty-icon"><Type size={26} strokeWidth={1.75} /></div>
-                <h2>Click anywhere to start</h2>
-                <p>Type a task or a project name right on the canvas.</p>
-              </div>}
-              {undo && <div className="undo-toast" role="status">
-                <span>{undo.message}</span>
-                <button className="undo-button" onClick={() => { setBoard(undo.board); setUndo(null); }}>Undo</button>
-                <button className="icon-button" aria-label="Dismiss message" onClick={() => setUndo(null)}><X size={15} /></button>
-              </div>}
-            </div>
+          <ResumePanel cards={board.cards} locateCard={locateCard} />
+          <main className="canvas" ref={canvas} aria-label="Card canvas"
+            onPointerDownCapture={() => { leavingEditor.current = Boolean(editing); }}
+            onPointerCancel={() => { setDropTarget(null); setDragging(null); }}>
+            <ReactFlow nodes={nodes} edges={[]} nodeTypes={nodeTypes} onNodesChange={applyChanges}
+              onNodeDragStart={(_, node) => { setDragging(node.id); setLocated(null); }}
+              onNodeDrag={moveNode} onNodeDragStop={finishDrag} onPaneClick={paneClick}
+              paneClickDistance={5} nodeDragThreshold={4} nodeClickDistance={4}
+              fitView={!initialView.small} fitViewOptions={fitOptions} defaultViewport={initialView.viewport}
+              minZoom={0.2} maxZoom={2.2} deleteKeyCode={null} elementsSelectable={false}
+              nodesConnectable={false} zoomOnDoubleClick={false} proOptions={{ hideAttribution: true }}>
+              <Background gap={22} size={1.35} color="#cfc9bd" />
+              <ZoomControls />
+            </ReactFlow>
+            {!board.cards.length && !draft && <div className="empty-board">
+              <div className="empty-icon"><Type size={27} /></div>
+              <h1 className="handwritten">Click anywhere to write</h1>
+            </div>}
+            <div className="canvas-hint"><Type size={14} /> <span>Click to write <span className="hint-dot">·</span> Drop onto a card to nest</span></div>
+            {undo && <div className="undo-toast" role="status">
+              <span>{undo.message}</span>
+              <button className="text-button" onClick={() => { setBoard(undo.board); setUndo(null); }}>Undo</button>
+              <button className="icon-button" aria-label="Dismiss message" onClick={() => setUndo(null)}><X size={15} /></button>
+            </div>}
           </main>
         </div>
       </div>

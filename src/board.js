@@ -1,11 +1,10 @@
-export const STORAGE_KEY = 'dayboard.board.v1';
-export const CARD_WIDTH = 382;
-export const TASK_HEIGHT = 104;
-export const TASK_GAP = 10;
-export const PROJECT_INSET = 12;
-export const PROJECT_HEADER_HEIGHT = 66;
-export const EMPTY_PROJECT_HEIGHT = 115;
-const NODE_GAP = 24;
+export const STORAGE_KEY = 'dayboard.board.v2';
+const LEGACY_KEY = 'dayboard.board.v1';
+export const CARD_WIDTH = 368;
+const MIN_WIDTH = 234;
+const CHILD_INSET = 12;
+const CHILD_GAP = 9;
+const FRAME_BORDER = 1;
 
 export const statuses = {
   todo: 'To do',
@@ -15,143 +14,192 @@ export const statuses = {
 
 const sampleBoard = {
   example: true,
-  projects: [
-    { id: 'website', title: 'Website refresh', position: { x: 0, y: 0 } },
-    { id: 'weekly', title: 'Life admin', position: { x: 423, y: 24 } },
-  ],
-  tasks: [
-    { id: 'homepage', projectId: 'website', title: 'Draft the homepage', note: 'Next: write the hero copy', status: 'ongoing' },
-    { id: 'inspiration', projectId: 'website', title: 'Collect visual references', note: '', status: 'done' },
-    { id: 'review', projectId: 'website', title: 'Send the draft for feedback', note: '', status: 'todo' },
-    { id: 'trip', projectId: 'weekly', title: 'Plan the weekend trip', note: 'Next: compare train times', status: 'ongoing' },
-    { id: 'appointment', projectId: 'weekly', title: 'Book a dentist appointment', note: '', status: 'todo' },
-    { id: 'invoice', projectId: null, title: 'Send the November invoice', note: '', status: 'todo', position: { x: 0, y: 472 } },
-    { id: 'notes', projectId: null, title: 'Organize meeting notes', note: '', status: 'done', position: { x: 423, y: 390 } },
+  cards: [
+    { id: 'website', text: '### Website refresh\nA few things before the next review.', status: 'todo', parentId: null, position: { x: 0, y: 0 } },
+    { id: 'homepage', text: '### Draft the homepage\nNext: write the hero copy.', status: 'ongoing', parentId: 'website' },
+    { id: 'inspiration', text: 'Collect visual references', status: 'done', parentId: 'website' },
+    { id: 'review', text: 'Send the draft for feedback', status: 'todo', parentId: 'website' },
+    { id: 'weekend', text: '### Weekend plans\nAn easy trip out of town.', status: 'todo', parentId: null, position: { x: 409, y: 33 } },
+    { id: 'trip', text: '### Find a train\nCompare the morning trains\nand check the return times.', status: 'ongoing', parentId: 'weekend' },
+    { id: 'bag', text: 'Pack a bag\n- Water\n- Light jacket', status: 'done', parentId: 'weekend' },
+    { id: 'invoice', text: 'Send the November invoice', status: 'todo', parentId: null, position: { x: 0, y: 476 } },
   ],
 };
 
-export function loadBoard() {
+function literalMarkdown(text) {
+  return text.replace(/[\\*_[\]<>#&~`]/g, '\\$&').replace(/^([+\-=])(?=\s)/gm, '\\$1');
+}
+
+export function migrateBoard(legacy) {
+  const projects = legacy.projects.map(project => ({
+    id: project.id,
+    text: '### ' + literalMarkdown(project.title),
+    status: 'todo',
+    parentId: null,
+    position: project.position,
+  }));
+  const tasks = legacy.tasks.map(task => {
+    const parentId = task.projectId ?? null;
+    const text = literalMarkdown(task.title);
+    return {
+      id: task.id,
+      text: task.note ? '### ' + text + '\n' + literalMarkdown(task.note) : text,
+      status: task.status,
+      parentId,
+      ...(!parentId && { position: task.position }),
+    };
+  });
+  return { example: false, cards: [...projects, ...tasks] };
+}
+
+function readBoard(key) {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (Array.isArray(saved?.projects) && Array.isArray(saved?.tasks)) return saved;
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
   } catch {
-    // Start with the example if browser storage is unavailable.
+    return null;
+  }
+}
+
+export function loadBoard() {
+  const saved = readBoard(STORAGE_KEY);
+  if (Array.isArray(saved?.cards)) return saved;
+
+  const legacy = readBoard(LEGACY_KEY);
+  if (Array.isArray(legacy?.projects) && Array.isArray(legacy?.tasks) && !legacy.example) {
+    return migrateBoard(legacy);
   }
   return sampleBoard;
 }
 
-export function emptyBoard() {
-  return { example: false, projects: [], tasks: [] };
+export function cardLines(text) {
+  return text.split(/\r?\n/).map(line => line
+    .trim()
+    .replace(/^(?:#{1,6}|[>*+-]|\d+\.)\s+/, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/(?<!\\)(\*\*|__|`)(.+?)\1/g, '$2')
+    .replace(/\\([^\w\s])/g, '$1')
+  ).filter(Boolean);
 }
 
-function boardRects(board) {
-  const taskCounts = new Map();
-  for (const { projectId } of board.tasks) {
-    if (projectId) taskCounts.set(projectId, (taskCounts.get(projectId) || 0) + 1);
+export function cardLabel(text) {
+  return cardLines(text)[0]?.slice(0, 90) || 'Untitled card';
+}
+
+function estimatedBodyHeight(text) {
+  return text ? 60 + Math.max(1, text.split('\n').length) * 30 : 124;
+}
+
+export function layoutCards(cards, measurements = {}) {
+  const byParent = new Map();
+  for (const card of cards) {
+    const siblings = byParent.get(card.parentId) || [];
+    siblings.push(card);
+    byParent.set(card.parentId, siblings);
   }
-  return [
-    ...board.projects.map(project => ({
-      ...project.position,
-      id: project.id,
-      height: projectHeight(taskCounts.get(project.id) || 0),
-    })),
-    ...board.tasks.filter(task => !task.projectId).map(task => ({ ...task.position, id: task.id, height: TASK_HEIGHT })),
-  ];
+
+  const layout = new Map();
+  function visit(card, position, parent, width) {
+    const absolute = parent ? { x: parent.absolute.x + position.x, y: parent.absolute.y + position.y } : position;
+    const ancestors = parent ? [...parent.ancestors, parent.card.id] : [];
+    const measurement = measurements[card.id];
+    const bodyHeight = measurement?.width === width ? measurement.height : estimatedBodyHeight(card.text);
+    const entry = { card, position, absolute, width, bodyHeight, ancestors, children: [], layer: layout.size + 1 };
+    layout.set(card.id, entry);
+
+    const inset = Math.min(CHILD_INSET, Math.floor((width - MIN_WIDTH) / 2));
+    let y = bodyHeight + FRAME_BORDER;
+    for (const child of byParent.get(card.id) || []) {
+      y += CHILD_GAP;
+      const childEntry = visit(child, { x: inset, y }, entry, width - inset * 2);
+      entry.children.push(childEntry);
+      y += childEntry.height;
+    }
+    entry.nextChild = { x: inset, y: y + CHILD_GAP };
+    entry.height = y + FRAME_BORDER + (entry.children.length ? CHILD_GAP : 0);
+    return entry;
+  }
+
+  for (const card of byParent.get(null) || []) visit(card, card.position, null, CARD_WIDTH);
+  return layout;
 }
 
-export function projectHeight(taskCount) {
-  return EMPTY_PROJECT_HEIGHT + taskCount * TASK_HEIGHT + Math.max(0, taskCount - 1) * TASK_GAP;
-}
-
-export function taskSlot(index) {
-  return { x: PROJECT_INSET, y: PROJECT_HEADER_HEIGHT + index * (TASK_HEIGHT + TASK_GAP) };
-}
-
-export function absolutePosition(position, parent) {
-  if (!parent) return position;
-  return { x: position.x + parent.position.x, y: position.y + parent.position.y };
-}
-
-function overlapsColumn(a, b) {
-  return Math.abs(a.x - b.x) < CARD_WIDTH + NODE_GAP;
-}
-
-function spaceBelow(rects, origin, height) {
+export function availablePosition(layout, origin, height) {
   let y = origin.y;
-  for (const rect of rects.filter(rect => overlapsColumn(rect, origin)).sort((a, b) => a.y - b.y)) {
-    if (y + height + NODE_GAP <= rect.y) break;
-    y = Math.max(y, rect.y + rect.height + NODE_GAP);
+  const gap = 20;
+  const roots = [...layout.values()].filter(({ card, absolute }) =>
+    !card.parentId && Math.abs(absolute.x - origin.x) < CARD_WIDTH + gap
+  ).sort((a, b) => a.absolute.y - b.absolute.y);
+  for (const { absolute, height: occupied } of roots) {
+    if (y + height + gap <= absolute.y) break;
+    y = Math.max(y, absolute.y + occupied + gap);
   }
   return { x: origin.x, y };
 }
 
-export function getPlacement(board, origin, height = TASK_HEIGHT) {
-  return spaceBelow(boardRects(board), origin, height);
-}
+export function getDropTarget(layout, id, point) {
+  const entries = [...layout.values()];
+  const hit = entries.findLast(entry => {
+    if (entry.card.id === id || entry.ancestors.includes(id)) return false;
+    const { absolute, width, height } = entry;
+    return point.x >= absolute.x && point.x <= absolute.x + width &&
+      point.y >= absolute.y && point.y <= absolute.y + height;
+  });
+  if (!hit) return null;
 
-export function makeRoomForProject(board, projectId) {
-  const rects = boardRects(board);
-  const project = rects.find(rect => rect.id === projectId);
-  const oldBottom = project.y + projectHeight(board.tasks.filter(task => task.projectId === projectId).length - 1);
-  const newBottom = project.y + project.height;
-  const positions = new Map();
-  for (const rect of rects) {
-    if (rect.y < oldBottom || rect.y >= newBottom + NODE_GAP || !overlapsColumn(project, rect)) continue;
-    const position = spaceBelow(rects.filter(other => other.id !== rect.id), { x: rect.x, y: newBottom + NODE_GAP }, rect.height);
-    positions.set(rect.id, position);
-    rect.y = position.y;
+  const within = point.y - hit.absolute.y;
+  const edge = Math.min(17, hit.bodyHeight / 5);
+  if (hit.card.parentId && (within < edge || within >= hit.height - edge)) {
+    const parent = layout.get(hit.card.parentId);
+    const after = within >= hit.height - edge;
+    return { parentId: parent.card.id, slot: parent.children.indexOf(hit) + Number(after) };
   }
-  if (!positions.size) return board;
-  const move = items => items.map(item => positions.has(item.id) ? { ...item, position: positions.get(item.id) } : item);
-  return { ...board, projects: move(board.projects), tasks: move(board.tasks) };
+
+  const next = hit.children.findIndex(child => point.y < child.absolute.y + child.height / 2);
+  return { parentId: hit.card.id, slot: next < 0 ? hit.children.length : next };
 }
 
-export function getDropTarget(board, taskId, point) {
-  // Projects later in the array are drawn above earlier projects.
-  for (const project of board.projects.toReversed()) {
-    const { x, y } = project.position;
-    if (point.x < x || point.x > x + CARD_WIDTH || point.y < y) continue;
-    const rows = board.tasks.filter(task => task.projectId === project.id);
-    if (point.y > y + projectHeight(rows.length)) continue;
-    const nextRow = rows.findIndex((_, index) => point.y < y + taskSlot(index).y + TASK_HEIGHT / 2);
-    const slot = nextRow < 0 ? rows.length : nextRow;
-    const index = rows.slice(0, slot).filter(task => task.id !== taskId).length;
-    return { projectId: project.id, slot, index };
-  }
-  return null;
-}
-
-export function dropTask(board, id, target, position) {
-  const task = board.tasks.find(task => task.id === id);
-  if (!task) return board;
+export function placeCard(board, layout, id, target, position) {
+  const card = board.cards.find(item => item.id === id);
+  if (!card) return board;
   if (!target) {
-    return {
-      ...board,
-      tasks: board.tasks.map(item => item.id === id ? { ...item, projectId: null, position } : item),
-    };
+    const cards = board.cards.filter(item => item.id !== id);
+    cards.push({ ...card, parentId: null, position });
+    return { ...board, cards };
   }
+  const parent = layout.get(target.parentId);
+  if (parent.card.id === id || parent.ancestors.includes(id)) return board;
 
-  const { projectId, index } = target;
-  const tasks = board.tasks.filter(item => item.id !== id);
-  const siblings = tasks.filter(item => item.projectId === projectId);
-  const next = siblings[index];
+  const next = parent.children.slice(target.slot).find(entry => entry.card.id !== id);
+  const siblings = parent.children.filter(entry => entry.card.id !== id);
   const last = siblings.at(-1);
-  const insertion = next ? tasks.indexOf(next) : last ? tasks.indexOf(last) + 1 : tasks.length;
-  const groupedTask = { ...task, projectId };
-  delete groupedTask.position;
-  tasks.splice(insertion, 0, groupedTask);
-  const updated = { ...board, tasks };
-  return task.projectId === projectId ? updated : makeRoomForProject(updated, projectId);
+  const cards = board.cards.filter(item => item.id !== id);
+  const nextIndex = cards.findIndex(item => item.id === next?.card.id);
+  const lastIndex = cards.findIndex(item => item.id === last?.card.id);
+  const index = nextIndex >= 0 ? nextIndex : lastIndex >= 0 ? lastIndex + 1 : cards.length;
+  const nested = { ...card, parentId: parent.card.id };
+  delete nested.position;
+  cards.splice(index, 0, nested);
+  return { ...board, cards };
 }
 
-export function removeProject(board, id) {
-  const project = board.projects.find(item => item.id === id);
-  let index = 0;
+export function removeCard(board, layout, id) {
+  const entry = layout.get(id);
+  const children = entry.children.map(({ card, absolute }) => ({
+    ...card,
+    parentId: entry.card.parentId,
+    ...(!entry.card.parentId && { position: absolute }),
+  }));
   return {
     ...board,
-    projects: board.projects.filter(item => item.id !== id),
-    tasks: board.tasks.map(task => task.projectId === id
-      ? { ...task, projectId: null, position: absolutePosition(taskSlot(index++), project) }
-      : task),
+    cards: board.cards.flatMap(card => card.id === id ? children : card.parentId === id ? [] : [card]),
   };
+}
+
+export function insertionLine(entry, slot) {
+  if (!entry.children.length) return entry.bodyHeight - 4;
+  const next = entry.children[slot];
+  if (next) return next.position.y - CHILD_GAP / 2;
+  const last = entry.children.at(-1);
+  return last.position.y + last.height + CHILD_GAP / 2;
 }
