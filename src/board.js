@@ -1,9 +1,10 @@
 export const STORAGE_KEY = 'dayboard.board.v1';
 export const CARD_WIDTH = 382;
-export const TASK_HEIGHT = 97;
-export const EMPTY_PROJECT_HEIGHT = 125;
-export const PROJECT_FOOTER_HEIGHT = 57;
-const TASK_GAP = 10;
+export const TASK_HEIGHT = 104;
+export const TASK_GAP = 10;
+export const PROJECT_INSET = 12;
+export const PROJECT_HEADER_HEIGHT = 66;
+export const EMPTY_PROJECT_HEIGHT = 115;
 const NODE_GAP = 24;
 
 export const statuses = {
@@ -62,6 +63,15 @@ export function projectHeight(taskCount) {
   return EMPTY_PROJECT_HEIGHT + taskCount * TASK_HEIGHT + Math.max(0, taskCount - 1) * TASK_GAP;
 }
 
+export function taskSlot(index) {
+  return { x: PROJECT_INSET, y: PROJECT_HEADER_HEIGHT + index * (TASK_HEIGHT + TASK_GAP) };
+}
+
+export function absolutePosition(position, parent) {
+  if (!parent) return position;
+  return { x: position.x + parent.position.x, y: position.y + parent.position.y };
+}
+
 function overlapsColumn(a, b) {
   return Math.abs(a.x - b.x) < CARD_WIDTH + NODE_GAP;
 }
@@ -94,4 +104,54 @@ export function makeRoomForProject(board, projectId) {
   if (!positions.size) return board;
   const move = items => items.map(item => positions.has(item.id) ? { ...item, position: positions.get(item.id) } : item);
   return { ...board, projects: move(board.projects), tasks: move(board.tasks) };
+}
+
+export function getDropTarget(board, taskId, point) {
+  // Projects later in the array are drawn above earlier projects.
+  for (const project of board.projects.toReversed()) {
+    const { x, y } = project.position;
+    if (point.x < x || point.x > x + CARD_WIDTH || point.y < y) continue;
+    const rows = board.tasks.filter(task => task.projectId === project.id);
+    if (point.y > y + projectHeight(rows.length)) continue;
+    const nextRow = rows.findIndex((_, index) => point.y < y + taskSlot(index).y + TASK_HEIGHT / 2);
+    const slot = nextRow < 0 ? rows.length : nextRow;
+    const index = rows.slice(0, slot).filter(task => task.id !== taskId).length;
+    return { projectId: project.id, slot, index };
+  }
+  return null;
+}
+
+export function dropTask(board, id, target, position) {
+  const task = board.tasks.find(task => task.id === id);
+  if (!task) return board;
+  if (!target) {
+    return {
+      ...board,
+      tasks: board.tasks.map(item => item.id === id ? { ...item, projectId: null, position } : item),
+    };
+  }
+
+  const { projectId, index } = target;
+  const tasks = board.tasks.filter(item => item.id !== id);
+  const siblings = tasks.filter(item => item.projectId === projectId);
+  const next = siblings[index];
+  const last = siblings.at(-1);
+  const insertion = next ? tasks.indexOf(next) : last ? tasks.indexOf(last) + 1 : tasks.length;
+  const groupedTask = { ...task, projectId };
+  delete groupedTask.position;
+  tasks.splice(insertion, 0, groupedTask);
+  const updated = { ...board, tasks };
+  return task.projectId === projectId ? updated : makeRoomForProject(updated, projectId);
+}
+
+export function removeProject(board, id) {
+  const project = board.projects.find(item => item.id === id);
+  let index = 0;
+  return {
+    ...board,
+    projects: board.projects.filter(item => item.id !== id),
+    tasks: board.tasks.map(task => task.projectId === id
+      ? { ...task, projectId: null, position: absolutePosition(taskSlot(index++), project) }
+      : task),
+  };
 }
