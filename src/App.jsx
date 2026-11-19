@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Background, ReactFlow, useNodesState, useReactFlow, useViewport } from '@xyflow/react';
+import { Background, ReactFlow, getViewportForBounds, useNodesState, useReactFlow, useViewport } from '@xyflow/react';
 import { Archive, CloudOff, LocateFixed, Maximize, Minus, PanelLeft, Plus, Type, X } from 'lucide-react';
 import { BoardActions, StatusIcon, getNodes, nodeTypes } from './BoardNodes.jsx';
 import { useAreaSelection } from './useAreaSelection.js';
 import {
-  CARD_WIDTH, STORAGE_KEY, availablePosition, cardLines, getDropTarget, importBackup,
+  CARD_WIDTH, STORAGE_KEY, availablePosition, boardBounds, cardLines, getDropTarget, importBackup,
   layoutCards, loadBoard, loadSavedBoard, placeCard, readBackup, readLocal, removeCard, removeCards, statuses,
 } from './board.js';
 
@@ -88,7 +88,6 @@ function ZoomControls() {
 
 export default function App() {
   const [board, setBoard] = useState(loadBoard);
-  const [draft, setDraft] = useState(null);
   const [editing, setEditing] = useState(null);
   const [measurements, setMeasurements] = useState({});
   const [dropTarget, setDropTarget] = useState(null);
@@ -109,18 +108,15 @@ export default function App() {
     };
   });
 
-  const layout = useMemo(() => {
-    const cards = draft && !board.cards.some(card => card.id === draft.id) ? [...board.cards, draft] : board.cards;
-    return layoutCards(cards, measurements, resizing);
-  }, [board, draft, measurements, resizing]);
-  const graph = useMemo(() => getNodes(layout, draft?.id), [layout, draft]);
+  const layout = useMemo(() => layoutCards(board.cards, measurements, resizing), [board, measurements, resizing]);
+  const graph = useMemo(() => getNodes(layout), [layout]);
   const [nodes, setNodes, applyChanges] = useNodesState(graph);
   const canvas = useRef(null);
   const latestBoard = useRef(board);
   const storageWritable = useRef(true);
-  const afterImport = useRef(false);
+  const fitPending = useRef(initialView.fit && board.cards.length ? 0 : null);
   const flow = useReactFlow();
-  const selection = useAreaSelection(flow, layout, draft?.id);
+  const selection = useAreaSelection(flow, layout);
   const selectionCount = board.cards.filter(card => selection.selected.has(card.id)).length;
 
   useLayoutEffect(() => setNodes(graph), [graph, setNodes]);
@@ -151,10 +147,13 @@ export default function App() {
   }, [persist]);
 
   useEffect(() => {
-    if (!afterImport.current || nodes !== graph) return;
-    afterImport.current = false;
-    if (nodes.length) flow.fitView({ ...fitOptions, duration: 180 });
-  }, [nodes, graph, flow]);
+    const duration = fitPending.current;
+    if (duration === null || !flow.viewportInitialized || !layout.size) return;
+    const { width, height } = canvas.current.getBoundingClientRect();
+    if (!width || !height) return;
+    fitPending.current = null;
+    flow.setViewport(getViewportForBounds(boardBounds(layout), width, height, 0.2, fitOptions.maxZoom, fitOptions.padding), { duration });
+  }, [layout, flow]);
 
   const measure = useCallback((id, width, height) => {
     setMeasurements(current => current[id]?.height === height && current[id]?.width === width
@@ -198,7 +197,7 @@ export default function App() {
   async function restoreBackup(file) {
     try {
       const cards = readBackup(await file.text());
-      afterImport.current = true;
+      fitPending.current = cards.length ? 180 : null;
       updateBoard(current => importBackup(current, cards), 'Backup imported');
     } catch {
       setNotice('Could not open this Dayboard backup.');
@@ -225,7 +224,7 @@ export default function App() {
     }
   }
 
-  function startDraft(parentId = null, point = null) {
+  function createCard(parentId = null, point = null) {
     selection.clear();
     const bounds = canvas.current.getBoundingClientRect();
     const zoom = flow.getZoom();
@@ -236,16 +235,16 @@ export default function App() {
     const parent = parentId ? layout.get(parentId) : null;
     const id = crypto.randomUUID();
     const newCard = { id, text: '', status: 'todo', parentId, ...(!parentId && {
-      position: point ? origin : availablePosition(layout, origin, 144),
+      position: point ? origin : availablePosition(layout, origin, 56),
     }) };
     setLocated(null);
-    setDraft(newCard);
+    updateBoard(current => ({ ...current, cards: [...current.cards, newCard] }));
     setEditing(id);
     if (parent) {
       const { x, y } = parent.nextChild;
-      reveal({ x: parent.absolute.x + x, y: parent.absolute.y + y }, parent.width - x * 2, 225);
+      reveal({ x: parent.absolute.x + x, y: parent.absolute.y + y }, parent.width - x * 2, 112);
     } else {
-      reveal(newCard.position, CARD_WIDTH, 225);
+      reveal(newCard.position, CARD_WIDTH, 112);
     }
   }
 
@@ -260,27 +259,21 @@ export default function App() {
   function writeText(id, text) {
     updateBoard(current => {
       const existing = current.cards.find(card => card.id === id);
-      if (existing) return existing.text === text ? current : {
+      if (!existing || existing.text === text) return current;
+      return {
         ...current, cards: current.cards.map(card => card.id === id ? { ...card, text } : card),
       };
-      return draft?.id === id && text.trim() ? { ...current, cards: [...current.cards, { ...draft, text }] } : current;
     });
   }
 
-  function finishEditing(id, text, original) {
+  function finishEditing(id, commit, original) {
     setEditing(current => current === id ? null : current);
-    if (draft?.id === id) {
-      if (text?.trim()) writeText(id, text);
-      else updateBoard(current => current.cards.some(card => card.id === id) ? removeCard(current, layout, id) : current);
-      setDraft(null);
-      return;
-    }
-    if (text === null) writeText(id, original);
+    if (!commit) writeText(id, original);
   }
 
   useEffect(() => {
     function onKey(event) {
-      if (event.defaultPrevented || editing || event.target.closest?.('input, textarea, select, [contenteditable]')) return;
+      if (event.defaultPrevented || editing || event.target.closest?.('input, textarea, select, [contenteditable], .card-menu')) return;
       if (selectionCount && (event.key === 'Delete' || event.key === 'Backspace')) {
         event.preventDefault();
         updateBoard(current => removeCards(current, layout, selection.selected),
@@ -297,7 +290,7 @@ export default function App() {
         event.shiftKey || event.repeat || event.target.closest?.('button, [role=button]')
       ) return;
       event.preventDefault();
-      startDraft();
+      createCard();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -310,7 +303,7 @@ export default function App() {
 
   function paneDoubleClick(event) {
     if (!event.target.classList.contains('react-flow__pane') || editing || event.ctrlKey) return;
-    startDraft(null, { x: event.clientX, y: event.clientY });
+    createCard(null, { x: event.clientX, y: event.clientY });
   }
 
   function updateStatus(id, status) {
@@ -380,7 +373,7 @@ export default function App() {
 
   return (
     <BoardActions.Provider value={{
-      editing, draftId: draft?.id, startDraft, editCard, writeText, finishEditing, updateStatus,
+      editing, createCard, editCard, writeText, finishEditing, updateStatus,
       remove, measure, dropTarget, dragging, located, selected: selection.selected,
       resizing: resizing?.id, previewResize: setResizing, finishResize,
     }}>
@@ -403,7 +396,7 @@ export default function App() {
             </span>
             {board.example && <button className="text-button" title="Clear the example cards" onClick={clearExample}>Start fresh</button>}
             <BoardData download={downloadBackup} restore={restoreBackup} />
-            <button className="new-card" onClick={() => startDraft()} title="New card (N)"><Plus size={18} /> Card</button>
+            <button className="new-card" onClick={() => createCard()} title="New card (N)"><Plus size={18} /> Card</button>
           </div>
         </header>
         <div className={'workspace' + (sidebarHidden ? ' sidebar-hidden' : '')}>
@@ -416,14 +409,15 @@ export default function App() {
               onNodeDragStart={(_, node) => { setDragging(node.id); setLocated(null); }}
               onNodeDrag={moveNode} onNodeDragStop={finishDrag} onPaneClick={paneClick}
               paneClickDistance={5} nodeDragThreshold={4} nodeClickDistance={4}
-              fitView={initialView.fit} fitViewOptions={fitOptions} defaultViewport={initialView.viewport} onMoveEnd={saveViewport}
+              defaultViewport={initialView.viewport} onMoveEnd={saveViewport}
+              onMoveStart={() => canvas.current?.querySelector('.card-menu:popover-open')?.hidePopover()}
               minZoom={0.2} maxZoom={2.2} deleteKeyCode={null} elementsSelectable={false}
               nodesConnectable={false} zoomOnDoubleClick={false} proOptions={{ hideAttribution: true }}>
               <Background gap={22} size={1.35} color="#cfc9bd" />
               <ZoomControls />
             </ReactFlow>
             {selection.box && <div className="area-selection" aria-hidden="true" style={selection.box} />}
-            {!board.cards.length && !draft && <div className="empty-board">
+            {!board.cards.length && <div className="empty-board">
               <div className="empty-icon"><Type size={27} /></div>
               <h1 className="handwritten">Double-click to write</h1>
             </div>}

@@ -132,7 +132,7 @@ export function cardLabel(text) {
 }
 
 function estimatedBodyHeight(text) {
-  return text ? 60 + Math.max(1, text.split('\n').length) * 30 : 124;
+  return Math.max(54, 25 + text.split('\n').length * 28);
 }
 
 export function layoutCards(cards, measurements = {}, resize = null) {
@@ -217,6 +217,21 @@ export function availablePosition(layout, origin, height) {
   return { x: origin.x, y };
 }
 
+export function boardBounds(layout) {
+  let x = Infinity;
+  let y = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const entry of layout.values()) {
+    if (entry.card.parentId) continue;
+    x = Math.min(x, entry.absolute.x);
+    y = Math.min(y, entry.absolute.y);
+    right = Math.max(right, entry.absolute.x + entry.width);
+    bottom = Math.max(bottom, entry.absolute.y + entry.height);
+  }
+  return { x, y, width: right - x, height: bottom - y };
+}
+
 export function getDropTarget(layout, id, point) {
   const entries = [...layout.values()];
   const hit = entries.findLast(entry => {
@@ -267,14 +282,14 @@ export function removeCard(board, layout, id) {
   return removeCards(board, layout, new Set([id]));
 }
 
-export function cardsInArea(layout, start, end, excluded) {
+export function cardsInArea(layout, start, end) {
   const left = Math.min(start.x, end.x);
   const right = Math.max(start.x, end.x);
   const top = Math.min(start.y, end.y);
   const bottom = Math.max(start.y, end.y);
   const selected = new Set();
   for (const { card, absolute, width, height } of layout.values()) {
-    if (card.id !== excluded && absolute.x >= left && absolute.y >= top &&
+    if (absolute.x >= left && absolute.y >= top &&
       absolute.x + width <= right && absolute.y + height <= bottom) selected.add(card.id);
   }
   return selected;

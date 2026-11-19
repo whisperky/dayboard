@@ -15,7 +15,7 @@ function rectangle(start, end) {
   };
 }
 
-export function useAreaSelection(flow, layout, draftId) {
+export function useAreaSelection(flow, layout) {
   const [selected, setSelected] = useState(new Set());
   const [box, setBox] = useState(null);
   const gesture = useRef(null);
@@ -56,7 +56,7 @@ export function useAreaSelection(flow, layout, draftId) {
       else {
         const bounds = event.currentTarget.getBoundingClientRect();
         const toFlow = point => flow.screenToFlowPosition({ x: bounds.left + point.x, y: bounds.top + point.y });
-        setSelected(cardsInArea(layout, toFlow(active.start), toFlow(end), draftId));
+        setSelected(cardsInArea(layout, toFlow(active.start), toFlow(end)));
       }
       cancel();
     },

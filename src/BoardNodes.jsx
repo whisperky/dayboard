@@ -1,7 +1,7 @@
-import React, { createContext, memo, useContext, useLayoutEffect, useRef, useState } from 'react';
+import React, { createContext, memo, useContext, useId, useLayoutEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
-import { Check, Circle, GripHorizontal, Plus, Trash2, Type } from 'lucide-react';
+import { Check, Circle, Ellipsis, GripVertical, Plus, Trash2 } from 'lucide-react';
 import { CardResize } from './CardResize.jsx';
 import { cardLabel, insertionLine, statuses } from './board.js';
 
@@ -19,14 +19,45 @@ export function StatusIcon({ status, size = 14 }) {
   return <Circle size={size - 1} strokeWidth={2.1} />;
 }
 
-function StatusSelect({ card, label, onChange }) {
+function CardActions({ card, label, changeStatus, addChild, remove }) {
+  const id = useId();
+  const trigger = useRef(null);
+  const menu = useRef(null);
+
+  function placeMenu() {
+    const panel = menu.current;
+    if (!panel?.matches(':popover-open')) return;
+    const { right, top, bottom } = trigger.current.getBoundingClientRect();
+    const { offsetWidth: width, offsetHeight: height } = panel;
+    const below = bottom + 5;
+    const maxTop = window.innerHeight - height - 8;
+    panel.style.left = Math.max(8, Math.min(right - width, window.innerWidth - width - 8)) + 'px';
+    panel.style.top = Math.max(8, below <= maxTop ? below : Math.min(top - height - 5, maxTop)) + 'px';
+  }
+
+  function run(action) {
+    menu.current.hidePopover();
+    action();
+  }
+
   return (
-    <label className="status-select nodrag nopan" title="Change status">
-      <span className="status-dot" aria-hidden="true" />
-      <select aria-label={label + ' status'} value={card.status} onChange={event => onChange(event.target.value)}>
-        {statusEntries.map(([id, title]) => <option key={id} value={id}>{title}</option>)}
-      </select>
-    </label>
+    <div className="card-actions nodrag nopan">
+      <button ref={trigger} type="button" className="icon-button card-actions-trigger" popoverTarget={id}
+        aria-label={'Actions for ' + label} title="Card actions"><Ellipsis size={17} /></button>
+      <div ref={menu} id={id} popover="auto" className="card-menu nowheel" aria-label={'Card actions for ' + label} onToggle={placeMenu}>
+        <div className="card-menu-label">Status</div>
+        {statusEntries.map(([value, title]) => (
+          <button key={value} type="button" className="card-menu-status" aria-pressed={card.status === value}
+            onClick={() => run(() => changeStatus(value))}>
+            <span>{title}</span>
+            {card.status === value && <Check size={14} aria-hidden="true" />}
+          </button>
+        ))}
+        <div className="card-menu-divider" />
+        <button type="button" onClick={() => run(addChild)}><Plus size={15} /> Add nested card</button>
+        <button type="button" className="card-menu-remove" onClick={() => run(remove)}><Trash2 size={14} /> Delete card</button>
+      </div>
+    </div>
   );
 }
 
@@ -63,12 +94,12 @@ function CardEditor({ initialText, onWrite, finish }) {
   function complete(commit) {
     if (finished.current) return;
     finished.current = true;
-    finish(commit ? text : null, original.current);
+    finish(commit, original.current);
   }
 
   return (
     <div className="card-editor nodrag nopan nowheel handwritten" data-text={text}>
-      <textarea ref={field} aria-label="Card text" rows={2} placeholder="Write something…" value={text}
+      <textarea ref={field} aria-label="Card text" rows={1} placeholder="Write something…" value={text}
         onChange={event => {
           setText(event.target.value);
           onWrite(event.target.value);
@@ -89,10 +120,9 @@ function CardNode({ data }) {
   const entry = data.entry;
   const { card, width } = entry;
   const {
-    editing, draftId, startDraft, editCard, writeText, finishEditing, updateStatus, remove, measure,
+    editing, createCard, editCard, writeText, finishEditing, updateStatus, remove, measure,
     dropTarget, dragging, located, selected, resizing, previewResize, finishResize,
   } = useContext(BoardActions);
-  const isDraft = card.id === draftId;
   const isEditing = editing === card.id;
   const isCarried = dragging === card.id || entry.ancestors.includes(dragging);
   const receiving = dropTarget?.parentId === card.id;
@@ -121,32 +151,23 @@ function CardNode({ data }) {
   return (
     <article className={'note-card status-' + card.status + ' ' + stateClasses} style={{ height: entry.height }}>
       <div className="card-body" ref={body}>
+        <div className="card-drag-area" title="Drag card" aria-hidden="true"><GripVertical size={15} /></div>
         {isEditing
           ? <CardEditor initialText={card.text} onWrite={text => writeText(card.id, text)}
-              finish={(text, original) => finishEditing(card.id, text, original)} />
+              finish={(commit, original) => finishEditing(card.id, commit, original)} />
           : <CardText text={card.text} label={label} edit={() => editCard(card.id)} />}
-        {isDraft ? (
-          <div className="card-footer draft-hint"><Type size={15} /> <span>Click away to save</span></div>
-        ) : (
-          <div className="card-footer card-drag-area" title="Drag card">
-            <StatusSelect card={card} label={label} onChange={value => updateStatus(card.id, value)} />
-            <span className="drag-grip" aria-hidden="true"><GripHorizontal size={17} /></span>
-            <button type="button" className="icon-button card-action nodrag nopan" aria-label={'Add card under: ' + label}
-              title="Add a card underneath" onClick={() => startDraft(card.id)}><Plus size={17} /></button>
-            <button type="button" className="icon-button card-action remove-card nodrag nopan" aria-label={'Delete card: ' + label}
-              title="Remove card" onClick={() => remove(card.id)}><Trash2 size={14} /></button>
-          </div>
-        )}
+        <CardActions card={card} label={label} changeStatus={value => updateStatus(card.id, value)}
+          addChild={() => createCard(card.id)} remove={() => remove(card.id)} />
       </div>
       {receiving && <div className="drop-line" style={{ top: insertionLine(entry, dropTarget.slot) }} />}
-      {!isDraft && !isEditing && <CardResize entry={entry} label={label} preview={previewResize} finish={finishResize} />}
+      {!isEditing && <CardResize entry={entry} label={label} preview={previewResize} finish={finishResize} />}
     </article>
   );
 }
 
 export const nodeTypes = { card: CardNode };
 
-export function getNodes(layout, draftId) {
+export function getNodes(layout) {
   return [...layout.values()].map(entry => ({
     id: entry.card.id,
     type: 'card',
@@ -157,8 +178,7 @@ export function getNodes(layout, draftId) {
     initialHeight: entry.height,
     style: { width: entry.width, pointerEvents: 'auto', '--card-layer': entry.layer },
     zIndex: entry.layer,
-    ...(entry.card.id === draftId && { draggable: false, focusable: false }),
-    ariaLabel: cardLabel(entry.card.text) + ' card',
+    ariaLabel: entry.card.text.trim() ? cardLabel(entry.card.text) + ' card' : 'Untitled card',
     data: { entry },
   }));
 }
