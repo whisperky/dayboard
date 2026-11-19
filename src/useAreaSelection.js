@@ -29,6 +29,16 @@ export function useAreaSelection(flow, layout) {
     setSelected(previous => previous.size ? new Set() : previous);
   }
 
+  function pick(id, extend = false) {
+    setSelected(previous => {
+      if (!extend) return previous.size === 1 && previous.has(id) ? previous : new Set([id]);
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   const handlers = {
     onPointerDownCapture(event) {
       if (!event.ctrlKey || event.button !== 0 || !event.target.closest('.react-flow__pane') ||
@@ -70,5 +80,5 @@ export function useAreaSelection(flow, layout) {
     },
   };
 
-  return { selected, box, clear, cancel, handlers };
+  return { selected, box, pick, clear, cancel, handlers };
 }

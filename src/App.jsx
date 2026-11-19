@@ -1,17 +1,18 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Background, ReactFlow, getViewportForBounds, useNodesState, useReactFlow, useViewport } from '@xyflow/react';
-import { Archive, CloudOff, Link2, LocateFixed, Maximize, Minus, PanelLeft, Plus, Type, X } from 'lucide-react';
+import { Background, ReactFlow, ViewportPortal, getViewportForBounds, useNodesState, useReactFlow, useViewport } from '@xyflow/react';
+import { Archive, CloudOff, Link2, LocateFixed, Maximize, Minus, PanelLeft, Plus, Trash2, Type, X } from 'lucide-react';
 import { BoardActions, StatusIcon, getNodes, nodeTypes } from './BoardNodes.jsx';
 import { edgeTypes, getEdges } from './CardConnection.jsx';
 import { useAreaSelection } from './useAreaSelection.js';
 import {
   CARD_WIDTH, STORAGE_KEY, addLink, availablePosition, boardBounds, cardLines, getDropTarget, importBackup,
-  layoutCards, linkId, loadBoard, loadSavedBoard, placeCard, readBackup, readLocal, removeCard, removeCards, sharesHierarchy, statuses,
+  layoutCards, linkId, loadBoard, loadSavedBoard, placeCard, readBackup, readLocal, removeCards, sharesHierarchy, statuses,
 } from './board.js';
 
 const fitOptions = { padding: 0.15, maxZoom: 1.04 };
 const SIDEBAR_KEY = 'dayboard.sidebar-hidden';
 const VIEW_KEY = 'dayboard.viewport';
+const statusKeys = Object.keys(statuses);
 
 function ResumePanel({ cards, locateCard, hidden }) {
   const ongoing = cards.filter(card => card.status === 'ongoing');
@@ -87,6 +88,25 @@ function ZoomControls() {
   );
 }
 
+function SelectionTools({ card, edit, add, changeStatus, connect, remove }) {
+  return (
+    <div className="selection-tools" role="group" aria-label="Selected card actions">
+      <button type="button" onClick={edit}><kbd>Enter</kbd> Edit</button>
+      <button type="button" onClick={add}><kbd>A</kbd> Add child</button>
+      <label className="selection-status" title="Press S to cycle status">
+        <kbd>S</kbd>
+        <select aria-label="Selected card status" value={card.status} onChange={event => changeStatus(event.target.value)}>
+          {Object.entries(statuses).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </label>
+      <button type="button" onClick={connect}><kbd>C</kbd> Connect</button>
+      <button type="button" className="delete-selection" aria-label="Delete selected card" onClick={remove}>
+        <kbd>Del</kbd><Trash2 size={15} aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
   const [board, setBoard] = useState(loadBoard);
   const [editing, setEditing] = useState(null);
@@ -95,6 +115,7 @@ export default function App() {
   const [dragging, setDragging] = useState(null);
   const [resizing, setResizing] = useState(null);
   const [linking, setLinking] = useState(null);
+  const [linkPointer, setLinkPointer] = useState(null);
   const [selectedLink, setSelectedLink] = useState(null);
   const [located, setLocated] = useState(null);
   const [undo, setUndo] = useState(null);
@@ -112,7 +133,8 @@ export default function App() {
   });
 
   const layout = useMemo(() => layoutCards(board.cards, measurements, resizing), [board, measurements, resizing]);
-  const linkSource = layout.has(linking?.source) ? linking.source : null;
+  const linkEntry = layout.get(linking?.source);
+  const linkSource = linkEntry?.card.id;
   const edges = useMemo(() => getEdges(board.links, layout, selectedLink), [board.links, layout, selectedLink]);
   const currentLink = edges.find(edge => edge.id === selectedLink);
   const graph = useMemo(() => getNodes(layout), [layout]);
@@ -123,7 +145,9 @@ export default function App() {
   const fitPending = useRef(initialView.fit && board.cards.length ? 0 : null);
   const flow = useReactFlow();
   const selection = useAreaSelection(flow, layout);
-  const selectionCount = board.cards.filter(card => selection.selected.has(card.id)).length;
+  const selectedCards = board.cards.filter(card => selection.selected.has(card.id));
+  const selectionCount = selectedCards.length;
+  const singleCard = selectionCount === 1 ? selectedCards[0] : null;
 
   useLayoutEffect(() => setNodes(graph), [graph, setNodes]);
 
@@ -205,7 +229,7 @@ export default function App() {
     try {
       const backup = readBackup(await file.text());
       fitPending.current = backup.cards.length ? 180 : null;
-      setLinking(null);
+      cancelLink();
       setSelectedLink(null);
       updateBoard(current => importBackup(current, backup), 'Backup imported');
     } catch {
@@ -234,8 +258,7 @@ export default function App() {
   }
 
   function createCard(parentId = null, point = null) {
-    selection.clear();
-    setLinking(null);
+    cancelLink();
     setSelectedLink(null);
     const bounds = canvas.current.getBoundingClientRect();
     const zoom = flow.getZoom();
@@ -250,6 +273,7 @@ export default function App() {
     }) };
     setLocated(null);
     updateBoard(current => ({ ...current, cards: [...current.cards, newCard] }));
+    selection.pick(id);
     setEditing(id);
     if (parent) {
       const { x, y } = parent.nextChild;
@@ -259,9 +283,15 @@ export default function App() {
     }
   }
 
-  function editCard(id) {
-    selection.clear();
+  function selectCard(id, extend = false) {
+    cancelLink();
+    setLocated(null);
     setSelectedLink(null);
+    selection.pick(id, extend);
+  }
+
+  function editCard(id) {
+    selectCard(id);
     const entry = layout.get(id);
     setEditing(id);
     setLocated(null);
@@ -284,9 +314,15 @@ export default function App() {
   }
 
   function startLink(id) {
-    selection.clear();
+    selection.pick(id);
     setSelectedLink(null);
+    setLinkPointer(null);
     setLinking({ source: id });
+  }
+
+  function cancelLink() {
+    setLinking(null);
+    setLinkPointer(null);
   }
 
   function linkProblem(id) {
@@ -306,14 +342,14 @@ export default function App() {
       return;
     }
     updateBoard(current => addLink(current, linkSource, id), 'Cards connected');
-    setLinking(null);
+    cancelLink();
   }
 
   function changeEdgeSelection(changes) {
     for (const change of changes) {
       if (change.type !== 'select') continue;
       if (change.selected) {
-        setLinking(null);
+        cancelLink();
         selection.clear();
         setSelectedLink(change.id);
       } else {
@@ -331,14 +367,21 @@ export default function App() {
     setSelectedLink(null);
   }
 
+  function deleteSelection() {
+    updateBoard(current => removeCards(current, layout, selection.selected),
+      selectionCount === 1 ? 'Card removed' : selectionCount + ' cards removed');
+    selection.clear();
+  }
+
   useEffect(() => {
     function onKey(event) {
-      if (event.defaultPrevented || editing || event.target.closest?.('input, textarea, select, [contenteditable], .card-menu')) return;
+      if (event.defaultPrevented || event.isComposing || editing || event.target.closest?.('input, textarea, select, [contenteditable], .data-menu')) return;
       if (event.key === 'Escape' && (linkSource || currentLink)) {
-        setLinking(null);
+        cancelLink();
         setSelectedLink(null);
         return;
       }
+      if (linkSource) return;
       if (currentLink && (event.key === 'Delete' || event.key === 'Backspace')) {
         event.preventDefault();
         removeLink();
@@ -346,21 +389,34 @@ export default function App() {
       }
       if (selectionCount && (event.key === 'Delete' || event.key === 'Backspace')) {
         event.preventDefault();
-        updateBoard(current => removeCards(current, layout, selection.selected),
-          selectionCount === 1 ? 'Card removed' : selectionCount + ' cards removed');
-        selection.clear();
+        deleteSelection();
         return;
       }
       if (selectionCount && event.key === 'Escape') {
         selection.clear();
         return;
       }
-      if (
-        event.key.toLowerCase() !== 'n' || event.metaKey || event.ctrlKey || event.altKey ||
-        event.shiftKey || event.repeat || event.target.closest?.('button, [role=button]')
-      ) return;
-      event.preventDefault();
-      createCard();
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.repeat) return;
+      const key = event.key.toLowerCase();
+      if (key === 'n') {
+        event.preventDefault();
+        createCard();
+        return;
+      }
+      if (!singleCard) return;
+      const { id, status } = singleCard;
+      const actions = {
+        a: () => createCard(id),
+        s: () => updateStatus(id, statusKeys[(statusKeys.indexOf(status) + 1) % statusKeys.length]),
+        c: () => startLink(id),
+      };
+      const action = key === 'enter' && !event.target.closest?.('button, [role=button]')
+        ? () => editCard(id)
+        : Object.hasOwn(actions, key) && actions[key];
+      if (action) {
+        event.preventDefault();
+        action();
+      }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -368,7 +424,7 @@ export default function App() {
 
   function paneClick() {
     selection.clear();
-    setLinking(null);
+    cancelLink();
     setSelectedLink(null);
     canvas.current.querySelector('.card-editor textarea')?.blur();
   }
@@ -399,12 +455,9 @@ export default function App() {
     }, 'Card resized');
   }
 
-  function remove(id) {
-    updateBoard(current => removeCard(current, layout, id), 'Card removed');
-  }
-
   function locateCard(id) {
     const entry = layout.get(id);
+    selectCard(id);
     setLocated(id);
     reveal(entry.absolute, entry.width, Math.min(entry.bodyHeight, 275), true);
   }
@@ -445,16 +498,16 @@ export default function App() {
     setBoard(previous);
     persist(previous);
     setSelectedLink(null);
-    setLinking(null);
+    cancelLink();
     setUndo(null);
   }
 
   return (
     <BoardActions.Provider value={{
-      editing, createCard, editCard, writeText, finishEditing, updateStatus,
-      remove, measure, dropTarget, dragging, located, selected: selection.selected,
+      editing, editCard, selectCard, writeText, finishEditing,
+      measure, dropTarget, dragging, located, selected: selection.selected, singleId: singleCard?.id,
       resizing: resizing?.id, previewResize: setResizing, finishResize,
-      linkSource, startLink, finishLink, linkProblem,
+      linkSource, startLink, finishLink, cancelLink, linkProblem,
     }}>
       <div className="app">
         <header className="topbar">
@@ -484,30 +537,39 @@ export default function App() {
             {...selection.handlers}
             onPointerDownCapture={event => {
               if (event.ctrlKey && event.button === 0) {
-                setLinking(null);
+                cancelLink();
                 setSelectedLink(null);
               }
               selection.handlers.onPointerDownCapture(event);
             }}
             onContextMenu={event => event.preventDefault()}
+            onPointerMove={event => {
+              if (linkSource) setLinkPointer(flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+            }}
+            onPointerLeave={() => setLinkPointer(null)}
             onDoubleClick={paneDoubleClick}
             onPointerCancel={() => { selection.cancel(); setDropTarget(null); setDragging(null); }}>
             <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
               zIndexMode="manual" onNodesChange={applyChanges} onEdgesChange={changeEdgeSelection}
-              onNodeDragStart={(_, node) => { setDragging(node.id); setLocated(null); }}
+              onNodeDragStart={(_, node) => { selectCard(node.id); setDragging(node.id); }}
               onNodeDrag={moveNode} onNodeDragStop={finishDrag} onPaneClick={paneClick}
               panOnDrag={[0, 2]} paneClickDistance={5} nodeDragThreshold={4} nodeClickDistance={4}
               defaultViewport={initialView.viewport} onMoveEnd={saveViewport}
-              onMoveStart={() => canvas.current?.querySelector('.card-menu:popover-open')?.hidePopover()}
               minZoom={0.2} maxZoom={2.2} deleteKeyCode={null} elementsSelectable={false}
               nodesConnectable={false} zoomOnDoubleClick={false} proOptions={{ hideAttribution: true }}>
               <Background gap={22} size={1.35} color="#cfc9bd" />
+              {linkEntry && linkPointer && <ViewportPortal>
+                <svg className="connection-preview" aria-hidden="true">
+                  <line x1={linkEntry.absolute.x + linkEntry.width + 9} y1={linkEntry.absolute.y + linkEntry.bodyHeight / 2}
+                    x2={linkPointer.x} y2={linkPointer.y} />
+                </svg>
+              </ViewportPortal>}
               <ZoomControls />
             </ReactFlow>
             {(linkSource || currentLink) && <div className="connection-tools">
               <Link2 size={15} aria-hidden="true" />
               <span role="status">{linkSource ? linking.error || 'Choose another card to connect' : 'Connection selected'}</span>
-              <button type="button" className="text-button" onClick={linkSource ? () => setLinking(null) : removeLink}>
+              <button type="button" className="text-button" onClick={linkSource ? cancelLink : removeLink}>
                 {linkSource ? 'Cancel' : 'Remove'}
               </button>
             </div>}
@@ -516,10 +578,14 @@ export default function App() {
               <div className="empty-icon"><Type size={27} /></div>
               <h1 className="handwritten">Double-click to write</h1>
             </div>}
-            <div className="canvas-hint" aria-live="polite"><Type size={14} /> {selectionCount
+            {singleCard && !editing && !linkSource && !currentLink ? <SelectionTools card={singleCard}
+              edit={() => editCard(singleCard.id)} add={() => createCard(singleCard.id)}
+              changeStatus={value => updateStatus(singleCard.id, value)} connect={() => startLink(singleCard.id)}
+              remove={deleteSelection} />
+              : !editing && !linkSource && !currentLink && <div className="canvas-hint" aria-live="polite"><Type size={14} /> {selectionCount
               ? <span>{selectionCount} selected <span className="hint-dot">·</span> Delete to remove</span>
-              : <span>Double-click to write <span className="hint-dot">·</span> Ctrl+drag to select</span>}
-            </div>
+              : <span>Click to select <span className="hint-dot">·</span> Ctrl+drag to select several</span>}
+            </div>}
             {(notice || undo) && <div className="undo-toast" role="status">
               <span>{notice || undo.message}</span>
               {!notice && <button className="text-button" onClick={undoChange}>Undo</button>}

@@ -168,9 +168,9 @@ svg { flex-shrink: 0; }
   opacity: 1;
 }
 .note-card.writing { outline: 2px solid var(--purple); outline-offset: 2px; box-shadow: inset 4px 0 var(--accent), 0 7px 20px #3b29601f; }
-.card-body { position: relative; min-height: 54px; padding: 12px 34px 11px 31px; }
+.card-body { position: relative; min-height: 54px; padding: 12px 16px 11px 31px; }
 .card-copy, .card-editor { font-size: 20px; line-height: 1.38; overflow-wrap: anywhere; }
-.card-copy { display: flow-root; min-height: 27px; padding-inline: 3px; border-radius: 5px; cursor: text; }
+.card-copy { display: flow-root; min-height: 27px; padding-inline: 3px; border-radius: 5px; cursor: pointer; }
 .card-copy:hover { background: #ffffff54; }
 .card-copy .placeholder { color: #706b62; }
 .card-copy > * + * { margin-top: .24em; }
@@ -216,33 +216,37 @@ svg { flex-shrink: 0; }
 }
 .card-drag-area:hover { background: #fff8; }
 .dragging .card-drag-area { cursor: grabbing; }
-.card-actions { position: absolute; top: 7px; right: 6px; }
-.card-actions-trigger { width: 26px; height: 26px; }
-.card-actions-trigger:hover { background: #fff9; }
-.card-drag-area svg, .card-actions-trigger { opacity: 0; }
-.note-card:is(:hover, :focus-within, .area-selected) :is(.card-drag-area svg, .card-actions-trigger),
-.card-actions:has(.card-menu:popover-open) .card-actions-trigger { opacity: 1; }
-.card-menu {
-  position: fixed;
-  inset: 8px auto auto 8px;
-  width: 172px;
-  max-height: calc(100dvh - 16px);
-  overflow-y: auto;
-  margin: 0;
-  padding: 5px;
-  color: var(--ink);
-  background: var(--white);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  box-shadow: 0 6px 20px #372c2126;
+.card-drag-area svg { opacity: 0; }
+.note-card:is(:hover, :focus-within, .area-selected) .card-drag-area svg { opacity: 1; }
+.connection-dot {
+  position: absolute;
+  top: 50%;
+  right: -20px;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: crosshair;
+  touch-action: none;
 }
-.card-menu-label { padding: 5px 7px 2px; color: var(--muted); font-size: 12px; font-weight: 650; }
-.card-menu button { width: 100%; min-height: 31px; display: flex; align-items: center; gap: 7px; padding: 5px 7px; border: 0; border-radius: 5px; background: transparent; text-align: left; font-size: 14px; }
-.card-menu button:hover, .card-menu button:focus-visible { background: #eeebfe; }
-.card-menu-status { justify-content: space-between; }
-.card-menu-status[aria-pressed="true"] { color: var(--purple-dark); }
-.card-menu-divider { height: 1px; margin: 4px 5px; background: var(--line); }
-.card-menu-remove { color: #a63439; }
+.connection-dot::after {
+  content: '';
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--purple);
+  border-radius: 50%;
+  background: var(--white);
+  box-shadow: 0 0 0 2px #f8f7f2;
+}
+.connection-dot:is(:hover, :focus-visible)::after, .link-source .connection-dot::after { background: var(--purple); }
+.connection-preview { position: absolute; width: 1px; height: 1px; overflow: visible; pointer-events: none; z-index: 12000; }
+.connection-preview line { stroke: var(--purple); stroke-width: 2; stroke-dasharray: 5 4; opacity: .8; }
 .half-circle { display: inline-block; flex-shrink: 0; border: 1.5px solid currentColor; border-radius: 50%; background: linear-gradient(90deg, currentColor 50%, transparent 50%); }
 
 .drop-line { pointer-events: none; position: absolute; left: 13px; right: 13px; height: 4px; margin-top: -2px; background: var(--purple); border-radius: 4px; }
@@ -252,7 +256,7 @@ svg { flex-shrink: 0; }
 .empty-icon { width: 48px; height: 48px; margin: 0 auto 10px; display: grid; place-items: center; border-radius: 12px; color: var(--purple-dark); background: #efebff; }
 .empty-board h1 { font-size: 30px; line-height: 1.2; }
 
-.canvas-hint, .zoom-controls, .undo-toast, .connection-tools {
+.canvas-hint, .zoom-controls, .undo-toast, .connection-tools, .selection-tools {
   position: absolute;
   z-index: 13000;
   display: flex;
@@ -271,6 +275,24 @@ svg { flex-shrink: 0; }
 .undo-toast .icon-button { width: 26px; height: 26px; }
 .connection-tools { top: 13px; left: 13px; max-width: calc(100% - 26px); padding: 5px 6px 5px 10px; gap: 8px; font-size: 14px; }
 .connection-tools > svg { color: var(--purple-dark); }
+.selection-tools { bottom: 13px; left: 13px; min-height: 40px; max-width: calc(100% - 26px); flex-wrap: wrap; gap: 3px; padding: 4px; }
+.selection-tools button, .selection-status {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.selection-tools button:hover, .selection-status:hover { background: #eeebfe; }
+.selection-tools kbd { font-family: inherit; font-size: 11px; font-weight: 700; color: var(--purple-dark); background: #efebf9; padding: 2px 4px; border-radius: 4px; }
+.selection-status select { min-height: 26px; border: 0; color: inherit; background: transparent; cursor: pointer; }
+.selection-tools .delete-selection { color: #a63439; }
+.canvas:has(.selection-tools) .undo-toast { bottom: 60px; }
 
 @media (max-width: 1000px) { .workspace { grid-template-columns: 202px minmax(0, 1fr); } }
 @media (max-width: 700px) {
@@ -292,6 +314,8 @@ svg { flex-shrink: 0; }
   .resume-copy > span { font-size: 13px; }
   .canvas { flex: 1; }
   .canvas-hint { display: none; }
+  .selection-tools { bottom: 60px; }
+  .canvas:has(.selection-tools) .undo-toast { bottom: auto; top: 55px; }
 }
-@media (hover: none) { .card-drag-area svg, .card-actions-trigger { opacity: .8; } }
+@media (hover: none) { .card-drag-area svg { opacity: .8; } }
 @media (hover: none) { .note-card > .resize-bottom-right::after { opacity: 1; } }

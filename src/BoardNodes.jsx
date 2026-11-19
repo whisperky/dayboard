@@ -1,13 +1,12 @@
-import React, { createContext, memo, useContext, useId, useLayoutEffect, useRef, useState } from 'react';
+import React, { createContext, memo, useContext, useLayoutEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import { Handle, Position } from '@xyflow/react';
-import { Check, Circle, Ellipsis, GripVertical, Link2, Plus, Trash2 } from 'lucide-react';
+import { Check, Circle, GripVertical } from 'lucide-react';
 import { CardResize } from './CardResize.jsx';
-import { cardLabel, insertionLine, statuses } from './board.js';
+import { cardLabel, insertionLine } from './board.js';
 
 export const BoardActions = createContext(null);
-const statusEntries = Object.entries(statuses);
 const markdownPlugins = [remarkBreaks];
 const markdownComponents = {
   a: ({ children }) => <span className="markdown-link">{children}</span>,
@@ -20,61 +19,53 @@ export function StatusIcon({ status, size = 14 }) {
   return <Circle size={size - 1} strokeWidth={2.1} />;
 }
 
-function CardActions({ card, label, changeStatus, connect, addChild, remove }) {
-  const id = useId();
-  const trigger = useRef(null);
-  const menu = useRef(null);
-
-  function placeMenu() {
-    const panel = menu.current;
-    if (!panel?.matches(':popover-open')) return;
-    const { right, top, bottom } = trigger.current.getBoundingClientRect();
-    const { offsetWidth: width, offsetHeight: height } = panel;
-    const below = bottom + 5;
-    const maxTop = window.innerHeight - height - 8;
-    panel.style.left = Math.max(8, Math.min(right - width, window.innerWidth - width - 8)) + 'px';
-    panel.style.top = Math.max(8, below <= maxTop ? below : Math.min(top - height - 5, maxTop)) + 'px';
+function ConnectionDot({ id, label, active, start, finish, cancel }) {
+  const gesture = useRef(null);
+  function cancelGesture(event) {
+    if (gesture.current?.pointerId !== event.pointerId) return;
+    gesture.current = null;
+    cancel();
   }
 
-  function run(action) {
-    menu.current.hidePopover();
-    action();
-  }
-
-  return (
-    <div className="card-actions nodrag nopan">
-      <button ref={trigger} type="button" className="icon-button card-actions-trigger" popoverTarget={id}
-        aria-label={'Actions for ' + label} title="Card actions"><Ellipsis size={17} /></button>
-      <div ref={menu} id={id} popover="auto" className="card-menu nowheel" aria-label={'Card actions for ' + label} onToggle={placeMenu}>
-        <div className="card-menu-label">Status</div>
-        {statusEntries.map(([value, title]) => (
-          <button key={value} type="button" className="card-menu-status" aria-pressed={card.status === value}
-            onClick={() => run(() => changeStatus(value))}>
-            <span>{title}</span>
-            {card.status === value && <Check size={14} aria-hidden="true" />}
-          </button>
-        ))}
-        <div className="card-menu-divider" />
-        <button type="button" onClick={() => run(connect)}><Link2 size={15} /> Connect to a card</button>
-        <button type="button" onClick={() => run(addChild)}><Plus size={15} /> Add nested card</button>
-        <button type="button" className="card-menu-remove" onClick={() => run(remove)}><Trash2 size={14} /> Delete card</button>
-      </div>
-    </div>
-  );
+  return <button type="button" className="connection-dot nodrag nopan" aria-label={'Connect from ' + label}
+    title="Drag to connect or click to choose a card (C)"
+    onPointerDown={event => {
+      if (event.button !== 0 || event.ctrlKey || gesture.current) return;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      gesture.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+      start(id);
+    }}
+    onPointerUp={event => {
+      const from = gesture.current;
+      if (from?.pointerId !== event.pointerId) return;
+      gesture.current = null;
+      if (!active || Math.hypot(event.clientX - from.x, event.clientY - from.y) < 5) return;
+      const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.react-flow__node')?.dataset.id;
+      if (target) finish(target);
+      else cancel();
+    }}
+    onPointerCancel={cancelGesture}
+    onLostPointerCapture={cancelGesture}
+    onClick={event => { if (event.detail === 0) start(id); }} />;
 }
 
 const MarkdownText = memo(function MarkdownText({ text }) {
   return <ReactMarkdown skipHtml remarkPlugins={markdownPlugins} components={markdownComponents}>{text}</ReactMarkdown>;
 });
 
-function CardText({ text, label, activate, connecting }) {
+function CardText({ text, label, activate, edit, connecting, selected }) {
   return (
     <div className="card-copy handwritten nodrag nopan" role="button" tabIndex={0}
-      aria-label={(connecting ? 'Connect to ' : 'Edit card: ') + label}
-      onClick={activate} onKeyDown={event => {
+      aria-label={(connecting ? 'Connect to ' : 'Select card: ') + label}
+      aria-pressed={connecting ? undefined : selected}
+      onClick={activate}
+      onDoubleClick={connecting ? undefined : edit}
+      onKeyDown={event => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
-          activate();
+          if (event.key === 'Enter' && !connecting) edit();
+          else activate(event);
         }
       }}>
       {text ? <MarkdownText text={text} /> : <span className="placeholder">Write something…</span>}
@@ -124,14 +115,17 @@ function CardNode({ data }) {
   const entry = data.entry;
   const { card, width } = entry;
   const {
-    editing, createCard, editCard, writeText, finishEditing, updateStatus, remove, measure,
-    dropTarget, dragging, located, selected, resizing, previewResize, finishResize, linkSource, startLink, finishLink, linkProblem,
+    editing, editCard, selectCard, writeText, finishEditing, measure,
+    dropTarget, dragging, located, selected, singleId, resizing, previewResize, finishResize,
+    linkSource, startLink, finishLink, cancelLink, linkProblem,
   } = useContext(BoardActions);
   const isEditing = editing === card.id;
   const isCarried = dragging === card.id || entry.ancestors.includes(dragging);
   const receiving = dropTarget?.parentId === card.id;
   const label = cardLabel(card.text);
   const body = useRef(null);
+  const isSelected = selected.has(card.id);
+  const activate = event => linkSource ? finishLink(card.id) : selectCard(card.id, event.shiftKey);
 
   useLayoutEffect(() => {
     const element = body.current;
@@ -149,16 +143,16 @@ function CardNode({ data }) {
     resizing === card.id && 'resizing',
     linkSource === card.id && 'link-source',
     linkSource && linkSource !== card.id && (linkProblem(card.id) ? 'link-unavailable' : 'link-target'),
-    selected.has(card.id) && 'area-selected',
+    isSelected && 'area-selected',
     located === card.id && 'located',
     entry.children.length && 'has-children',
   ].filter(Boolean).join(' ');
 
   return (
     <article className={'note-card status-' + card.status + ' ' + stateClasses} style={{ height: entry.height }}
-      onClick={linkSource ? event => {
-        if (!event.target.closest('.card-copy, .card-actions, .card-drag-area, button')) finishLink(card.id);
-      } : undefined}>
+      onClick={event => {
+        if (!event.target.closest('.card-copy, .card-editor, button')) activate(event);
+      }}>
       <Handle type="source" position={Position.Right} isConnectable={false} className="card-edge-anchor" />
       <Handle type="target" position={Position.Left} isConnectable={false} className="card-edge-anchor" />
       <div className="card-body" ref={body}>
@@ -166,10 +160,10 @@ function CardNode({ data }) {
         {isEditing
           ? <CardEditor initialText={card.text} onWrite={text => writeText(card.id, text)}
               finish={(commit, original) => finishEditing(card.id, commit, original)} />
-          : <CardText text={card.text} label={label} connecting={Boolean(linkSource)}
-              activate={() => linkSource ? finishLink(card.id) : editCard(card.id)} />}
-        <CardActions card={card} label={label} changeStatus={value => updateStatus(card.id, value)}
-          connect={() => startLink(card.id)} addChild={() => createCard(card.id)} remove={() => remove(card.id)} />
+          : <CardText text={card.text} label={label} connecting={Boolean(linkSource)} selected={isSelected}
+              activate={activate} edit={() => editCard(card.id)} />}
+        {!isEditing && singleId === card.id && <ConnectionDot id={card.id} label={label} active={linkSource === card.id}
+          start={startLink} finish={finishLink} cancel={cancelLink} />}
       </div>
       {receiving && <div className="drop-line" style={{ top: insertionLine(entry, dropTarget.slot) }} />}
       {!isEditing && !linkSource && <CardResize entry={entry} label={label} preview={previewResize} finish={finishResize} />}
