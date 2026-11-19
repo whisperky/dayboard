@@ -2,6 +2,7 @@ import React, { createContext, memo, useContext, useLayoutEffect, useRef, useSta
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import { Check, Circle, GripHorizontal, Plus, Trash2, Type } from 'lucide-react';
+import { CardResize } from './CardResize.jsx';
 import { cardLabel, insertionLine, statuses } from './board.js';
 
 export const BoardActions = createContext(null);
@@ -87,7 +88,10 @@ function CardEditor({ initialText, onWrite, finish }) {
 function CardNode({ data }) {
   const entry = data.entry;
   const { card, width } = entry;
-  const { editing, draftId, startDraft, editCard, writeText, finishEditing, updateStatus, remove, measure, dropTarget, dragging, located, selected } = useContext(BoardActions);
+  const {
+    editing, draftId, startDraft, editCard, writeText, finishEditing, updateStatus, remove, measure,
+    dropTarget, dragging, located, selected, resizing, previewResize, finishResize,
+  } = useContext(BoardActions);
   const isDraft = card.id === draftId;
   const isEditing = editing === card.id;
   const isCarried = dragging === card.id || entry.ancestors.includes(dragging);
@@ -108,6 +112,7 @@ function CardNode({ data }) {
     isEditing && 'writing',
     receiving && 'receiving',
     isCarried && 'carried',
+    resizing === card.id && 'resizing',
     selected.has(card.id) && 'area-selected',
     located === card.id && 'located',
     entry.children.length && 'has-children',
@@ -134,6 +139,7 @@ function CardNode({ data }) {
         )}
       </div>
       {receiving && <div className="drop-line" style={{ top: insertionLine(entry, dropTarget.slot) }} />}
+      {!isDraft && !isEditing && <CardResize entry={entry} label={label} preview={previewResize} finish={finishResize} />}
     </article>
   );
 }

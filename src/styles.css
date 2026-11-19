@@ -123,6 +123,40 @@ svg { flex-shrink: 0; }
 .note-card.receiving, .note-card.located { outline: 2px solid var(--purple); outline-offset: 2px; }
 .note-card.area-selected { outline: 2px solid var(--purple); outline-offset: 3px; }
 .area-selection { position: absolute; z-index: 12500; pointer-events: none; border: 1px solid var(--purple); background: #6750db33; }
+.resize-edge {
+  position: absolute;
+  z-index: 3;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  touch-action: none;
+}
+.resize-edge::after { content: ''; position: absolute; opacity: 0; }
+.resize-edge:is(:hover, :focus-visible)::after, .note-card.resizing > .resize-edge::after { opacity: .9; }
+.resize-left, .resize-right { top: 10px; bottom: 10px; width: 11px; cursor: ew-resize; }
+.resize-left { left: -5px; }
+.resize-right { right: -5px; }
+.resize-top, .resize-bottom { left: 10px; right: 10px; height: 11px; cursor: ns-resize; }
+.resize-top { top: -5px; }
+.resize-bottom { bottom: -5px; }
+:is(.resize-left, .resize-right)::after { inset: 0 5px; background: var(--purple); }
+:is(.resize-top, .resize-bottom)::after { inset: 5px 0; background: var(--purple); }
+[class*="resize-top-"], [class*="resize-bottom-"] { width: 14px; height: 14px; z-index: 4; }
+.resize-top-left, .resize-top-right { top: -6px; }
+.resize-bottom-left, .resize-bottom-right { bottom: -6px; }
+.resize-top-left, .resize-bottom-left { left: -6px; }
+.resize-top-right, .resize-bottom-right { right: -6px; }
+.resize-top-left, .resize-bottom-right { cursor: nwse-resize; }
+.resize-top-right, .resize-bottom-left { cursor: nesw-resize; }
+[class*="resize-top-"]::after, [class*="resize-bottom-"]::after {
+  inset: 3px;
+  border: 1px solid var(--purple);
+  border-radius: 2px;
+  background: var(--white);
+}
+.note-card:is(:hover, :focus-within, .area-selected) > :is([class*="resize-top-"], [class*="resize-bottom-"])::after {
+  opacity: 1;
+}
 .note-card.writing { outline: 2px solid var(--purple); outline-offset: 2px; box-shadow: inset 4px 0 var(--accent), 0 7px 20px #3b29601f; }
 .card-body { padding: 13px 13px 8px 15px; }
 .card-copy, .card-editor { font-size: 20px; line-height: 1.38; overflow-wrap: anywhere; }
@@ -231,3 +265,4 @@ svg { flex-shrink: 0; }
   .card-action { opacity: .8; }
 }
 @media (hover: none) { .card-action { opacity: .8; } }
+@media (hover: none) { .note-card > .resize-bottom-right::after { opacity: 1; } }

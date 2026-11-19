@@ -93,6 +93,7 @@ export default function App() {
   const [measurements, setMeasurements] = useState({});
   const [dropTarget, setDropTarget] = useState(null);
   const [dragging, setDragging] = useState(null);
+  const [resizing, setResizing] = useState(null);
   const [located, setLocated] = useState(null);
   const [undo, setUndo] = useState(null);
   const [notice, setNotice] = useState('');
@@ -110,8 +111,8 @@ export default function App() {
 
   const layout = useMemo(() => {
     const cards = draft && !board.cards.some(card => card.id === draft.id) ? [...board.cards, draft] : board.cards;
-    return layoutCards(cards, measurements);
-  }, [board, draft, measurements]);
+    return layoutCards(cards, measurements, resizing);
+  }, [board, draft, measurements, resizing]);
   const graph = useMemo(() => getNodes(layout, draft?.id), [layout, draft]);
   const [nodes, setNodes, applyChanges] = useNodesState(graph);
   const canvas = useRef(null);
@@ -316,6 +317,23 @@ export default function App() {
     updateBoard(current => ({ ...current, cards: current.cards.map(card => card.id === id ? { ...card, status } : card) }));
   }
 
+  function finishResize(change) {
+    setResizing(null);
+    if (!change) return;
+    updateBoard(current => {
+      const card = current.cards.find(item => item.id === change.id);
+      if (!card) return current;
+      const resized = layoutCards(current.cards, measurements, change).get(card.id);
+      const next = {
+        ...card,
+        ...(change.width !== undefined && { width: resized.width }),
+        ...(change.height !== undefined && { height: resized.height }),
+        ...(!card.parentId && { position: resized.position }),
+      };
+      return { ...current, cards: current.cards.map(item => item.id === card.id ? next : item) };
+    }, 'Card resized');
+  }
+
   function remove(id) {
     updateBoard(current => removeCard(current, layout, id), 'Card removed');
   }
@@ -364,6 +382,7 @@ export default function App() {
     <BoardActions.Provider value={{
       editing, draftId: draft?.id, startDraft, editCard, writeText, finishEditing, updateStatus,
       remove, measure, dropTarget, dragging, located, selected: selection.selected,
+      resizing: resizing?.id, previewResize: setResizing, finishResize,
     }}>
       <div className="app">
         <header className="topbar">

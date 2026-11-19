@@ -89,8 +89,15 @@ export function readBackup(text) {
       (card.parentId === null && (!Number.isFinite(card.position?.x) || !Number.isFinite(card.position?.y)))) {
       throw new Error('Invalid card');
     }
-    const { id, text, status, parentId, position } = card;
-    cards.set(id, { id, text, status, parentId, ...(!parentId && { position: { x: position.x, y: position.y } }) });
+    const { id, text, status, parentId, position, width, height } = card;
+    if ((width !== undefined && (!Number.isFinite(width) || width < MIN_WIDTH)) ||
+      (height !== undefined && (!Number.isFinite(height) || height < 1))) throw new Error('Invalid dimensions');
+    cards.set(id, {
+      id, text, status, parentId,
+      ...(!parentId && { position: { x: position.x, y: position.y } }),
+      ...(width !== undefined && { width }),
+      ...(height !== undefined && { height }),
+    });
   }
   const validated = new Set();
   for (const card of cards.values()) {
@@ -128,7 +135,7 @@ function estimatedBodyHeight(text) {
   return text ? 60 + Math.max(1, text.split('\n').length) * 30 : 124;
 }
 
-export function layoutCards(cards, measurements = {}) {
+export function layoutCards(cards, measurements = {}, resize = null) {
   const byParent = new Map();
   for (const card of cards) {
     const siblings = byParent.get(card.parentId) || [];
@@ -137,12 +144,13 @@ export function layoutCards(cards, measurements = {}) {
   }
 
   const layout = new Map();
-  function visit(card, position, parent, width) {
-    const absolute = parent ? { x: parent.absolute.x + position.x, y: parent.absolute.y + position.y } : position;
+  function visit(card, position, parent, availableWidth) {
+    const sizing = resize?.id === card.id ? { ...card, ...resize } : card;
+    const width = Math.max(MIN_WIDTH, Math.min(availableWidth, sizing.width ?? (parent ? availableWidth : CARD_WIDTH)));
     const ancestors = parent ? [...parent.ancestors, parent.card.id] : [];
     const measurement = measurements[card.id];
     const bodyHeight = measurement?.width === width ? measurement.height : estimatedBodyHeight(card.text);
-    const entry = { card, position, absolute, width, bodyHeight, ancestors, children: [], layer: layout.size + 1 };
+    const entry = { card, position, width, availableWidth, bodyHeight, ancestors, children: [], layer: layout.size + 1 };
     layout.set(card.id, entry);
 
     const inset = Math.min(CHILD_INSET, Math.floor((width - MIN_WIDTH) / 2));
@@ -154,19 +162,53 @@ export function layoutCards(cards, measurements = {}) {
       y += childEntry.height;
     }
     entry.nextChild = { x: inset, y: y + CHILD_GAP };
-    entry.height = y + FRAME_BORDER + (entry.children.length ? CHILD_GAP : 0);
+    const naturalHeight = y + FRAME_BORDER + (entry.children.length ? CHILD_GAP : 0);
+    entry.height = Math.max(naturalHeight, sizing.height ?? 0);
+    if (!parent && resize?.id === card.id) {
+      const anchor = resize.position ?? position;
+      entry.position = {
+        x: anchor.x,
+        y: resize.bottom === undefined ? anchor.y : resize.bottom - entry.height,
+      };
+    }
     return entry;
   }
 
-  for (const card of byParent.get(null) || []) visit(card, card.position, null, CARD_WIDTH);
+  function locate(entry, parent) {
+    entry.absolute = parent
+      ? { x: parent.x + entry.position.x, y: parent.y + entry.position.y }
+      : entry.position;
+    for (const child of entry.children) locate(child, entry.absolute);
+  }
+
+  for (const card of byParent.get(null) || []) locate(visit(card, card.position, null, Infinity));
   return layout;
+}
+
+export function resizeFromEdge(entry, edge, dx, dy) {
+  const horizontal = edge.includes('left') ? -1 : edge.includes('right') ? 1 : 0;
+  const vertical = edge.includes('top') ? -1 : edge.includes('bottom') ? 1 : 0;
+  const resize = { id: entry.card.id };
+  if (horizontal && Math.abs(dx) >= 1) {
+    const width = Math.max(MIN_WIDTH, Math.min(entry.availableWidth, Math.round(entry.width + horizontal * dx)));
+    if (width !== entry.width) resize.width = width;
+    if (horizontal < 0 && !entry.card.parentId) {
+      resize.position = { ...entry.position, x: entry.position.x + entry.width - width };
+    }
+  }
+  if (vertical && Math.abs(dy) >= 1) {
+    const height = Math.max(1, Math.round(entry.height + vertical * dy));
+    if (height !== entry.height) resize.height = height;
+    if (vertical < 0 && !entry.card.parentId) resize.bottom = entry.position.y + entry.height;
+  }
+  return resize.width !== undefined || resize.height !== undefined ? resize : null;
 }
 
 export function availablePosition(layout, origin, height) {
   let y = origin.y;
   const gap = 20;
-  const roots = [...layout.values()].filter(({ card, absolute }) =>
-    !card.parentId && Math.abs(absolute.x - origin.x) < CARD_WIDTH + gap
+  const roots = [...layout.values()].filter(({ card, absolute, width }) =>
+    !card.parentId && origin.x < absolute.x + width + gap && absolute.x < origin.x + CARD_WIDTH + gap
   ).sort((a, b) => a.absolute.y - b.absolute.y);
   for (const { absolute, height: occupied } of roots) {
     if (y + height + gap <= absolute.y) break;
