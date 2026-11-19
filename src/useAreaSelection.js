@@ -29,6 +29,10 @@ export function useAreaSelection(flow, layout) {
     setSelected(previous => previous.size ? new Set() : previous);
   }
 
+  function retain(cards) {
+    setSelected(previous => new Set(cards.filter(card => previous.has(card.id)).map(card => card.id)));
+  }
+
   function pick(id, extend = false) {
     setSelected(previous => {
       if (!extend) return previous.size === 1 && previous.has(id) ? previous : new Set([id]);
@@ -80,5 +84,5 @@ export function useAreaSelection(flow, layout) {
     },
   };
 
-  return { selected, box, pick, clear, cancel, handlers };
+  return { selected, box, pick, clear, retain, cancel, handlers };
 }

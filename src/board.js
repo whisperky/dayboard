@@ -9,7 +9,9 @@ const FRAME_BORDER = 1;
 export const statuses = {
   todo: 'To do',
   ongoing: 'Ongoing',
+  paused: 'Paused',
   done: 'Done',
+  finished: 'Finished',
   group: 'Group',
 };
 
@@ -63,7 +65,7 @@ export function readLocal(key) {
 }
 
 export function loadBoard() {
-  const saved = loadSavedBoard();
+  const saved = readSavedBoard()?.board;
   if (saved) return saved;
 
   const legacy = readLocal(LEGACY_KEY);
@@ -73,10 +75,16 @@ export function loadBoard() {
   return sampleBoard;
 }
 
-export function loadSavedBoard() {
-  const saved = readLocal(STORAGE_KEY);
-  if (!Array.isArray(saved?.cards)) return null;
-  return saved.example ? sampleBoard : { ...saved, links: normalizeLinks(saved.cards, saved.links) };
+export function readSavedBoard() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const saved = JSON.parse(raw);
+    if (!Array.isArray(saved?.cards)) return null;
+    const board = saved.example ? sampleBoard : { ...saved, links: normalizeLinks(saved.cards, saved.links) };
+    return { raw, board };
+  } catch {
+    return null;
+  }
 }
 
 export function linkId(source, target) {
@@ -301,14 +309,19 @@ export function placeCard(board, layout, id, target, position) {
   const card = board.cards.find(item => item.id === id);
   if (!card) return board;
   if (!target) {
+    if (!card.parentId && card.position.x === position.x && card.position.y === position.y) return board;
     const cards = board.cards.filter(item => item.id !== id);
     cards.push({ ...card, parentId: null, position });
     return { ...board, cards };
   }
   const parent = layout.get(target.parentId);
-  if (parent.card.id === id || parent.ancestors.includes(id)) return board;
+  if (!parent || parent.card.id === id || parent.ancestors.includes(id)) return board;
 
   const next = parent.children.slice(target.slot).find(entry => entry.card.id !== id);
+  if (card.parentId === parent.card.id) {
+    const currentIndex = parent.children.findIndex(entry => entry.card.id === id);
+    if (currentIndex >= 0 && parent.children[currentIndex + 1] === next) return board;
+  }
   const siblings = parent.children.filter(entry => entry.card.id !== id);
   const last = siblings.at(-1);
   const cards = board.cards.filter(item => item.id !== id);

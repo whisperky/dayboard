@@ -1,18 +1,25 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Background, ReactFlow, ViewportPortal, getViewportForBounds, useNodesState, useReactFlow, useViewport } from '@xyflow/react';
-import { Archive, CloudOff, Link2, LocateFixed, Maximize, Minus, PanelLeft, Plus, Trash2, Type, X } from 'lucide-react';
+import { Archive, CloudOff, Link2, LocateFixed, Maximize, Minus, PanelLeft, Plus, Redo2, Trash2, Type, Undo2, X } from 'lucide-react';
 import { BoardActions, StatusIcon, getNodes, nodeTypes } from './BoardNodes.jsx';
 import { edgeTypes, getEdges } from './CardConnection.jsx';
 import { useAreaSelection } from './useAreaSelection.js';
 import {
   CARD_WIDTH, STORAGE_KEY, addLink, availablePosition, boardBounds, cardLines, getDropTarget, importBackup,
-  layoutCards, linkId, loadBoard, loadSavedBoard, placeCard, readBackup, readLocal, removeCards, sharesHierarchy, statuses,
+  layoutCards, linkId, loadBoard, placeCard, readBackup, readLocal, readSavedBoard, removeCards, sharesHierarchy, statuses,
 } from './board.js';
 
 const fitOptions = { padding: 0.15, maxZoom: 1.04 };
 const SIDEBAR_KEY = 'dayboard.sidebar-hidden';
 const VIEW_KEY = 'dayboard.viewport';
 const statusKeys = Object.keys(statuses);
+const HISTORY_LIMIT = 100;
+
+function replaceCard(board, id, changes) {
+  const card = board.cards.find(item => item.id === id);
+  if (!card || Object.entries(changes).every(([key, value]) => card[key] === value)) return board;
+  return { ...board, cards: board.cards.map(item => item === card ? { ...card, ...changes } : item) };
+}
 
 function ResumePanel({ cards, locateCard, hidden }) {
   const ongoing = cards.filter(card => card.status === 'ongoing');
@@ -110,6 +117,7 @@ function SelectionTools({ card, edit, add, changeStatus, connect, remove }) {
 export default function App() {
   const [board, setBoard] = useState(loadBoard);
   const [editing, setEditing] = useState(null);
+  const editor = useRef(null);
   const [measurements, setMeasurements] = useState({});
   const [dropTarget, setDropTarget] = useState(null);
   const [dragging, setDragging] = useState(null);
@@ -118,7 +126,9 @@ export default function App() {
   const [linkPointer, setLinkPointer] = useState(null);
   const [selectedLink, setSelectedLink] = useState(null);
   const [located, setLocated] = useState(null);
-  const [undo, setUndo] = useState(null);
+  const history = useRef({ past: [], future: [] });
+  const [historyAvailability, setHistoryAvailability] = useState({ undo: false, redo: false });
+  const [undoMessage, setUndoMessage] = useState('');
   const [notice, setNotice] = useState('');
   const [savedLocally, setSavedLocally] = useState(true);
   const [sidebarHidden, setSidebarHidden] = useState(() => readLocal(SIDEBAR_KEY) === true);
@@ -141,6 +151,7 @@ export default function App() {
   const [nodes, setNodes, applyChanges] = useNodesState(graph);
   const canvas = useRef(null);
   const latestBoard = useRef(board);
+  const lastSaved = useRef(null);
   const storageWritable = useRef(true);
   const fitPending = useRef(initialView.fit && board.cards.length ? 0 : null);
   const flow = useReactFlow();
@@ -153,7 +164,9 @@ export default function App() {
 
   const persist = useCallback(next => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      const raw = JSON.stringify(next);
+      localStorage.setItem(STORAGE_KEY, raw);
+      lastSaved.current = raw;
       storageWritable.current = true;
       setSavedLocally(true);
     } catch {
@@ -162,19 +175,29 @@ export default function App() {
     }
   }, []);
 
+  const receiveBoard = useCallback(saved => {
+    lastSaved.current = saved.raw;
+    latestBoard.current = saved.board;
+    setBoard(saved.board);
+    history.current = { past: [], future: [] };
+    setHistoryAvailability({ undo: false, redo: false });
+    setUndoMessage('');
+    editor.current = null;
+    setEditing(null);
+  }, []);
+
   useLayoutEffect(() => {
-    persist(latestBoard.current);
+    const saved = readSavedBoard();
+    if (saved) receiveBoard(saved);
+    else persist(latestBoard.current);
     const sync = event => {
       if (event.key !== STORAGE_KEY || !storageWritable.current) return;
-      const incoming = loadSavedBoard();
-      if (!incoming) return;
-      latestBoard.current = incoming;
-      setBoard(incoming);
-      setUndo(null);
+      const incoming = readSavedBoard();
+      if (incoming && incoming.raw !== lastSaved.current) receiveBoard(incoming);
     };
     window.addEventListener('storage', sync);
     return () => window.removeEventListener('storage', sync);
-  }, [persist]);
+  }, [persist, receiveBoard]);
 
   useEffect(() => {
     const duration = fitPending.current;
@@ -191,17 +214,41 @@ export default function App() {
       : { ...current, [id]: { width, height } });
   }, []);
 
-  function updateBoard(updater, undoMessage) {
-    const current = (storageWritable.current && loadSavedBoard()) || latestBoard.current;
-    const updated = updater(current);
-    if (updated === current) return;
-    const next = { ...updated, example: false };
+  function currentBoard() {
+    const saved = storageWritable.current && readSavedBoard();
+    if (saved && saved.raw !== lastSaved.current) receiveBoard(saved);
+    return latestBoard.current;
+  }
+
+  function showHistoryAvailability() {
+    const { past, future } = history.current;
+    setHistoryAvailability({ undo: past.length > 0, redo: future.length > 0 });
+  }
+
+  function saveBoard(next) {
     latestBoard.current = next;
     setBoard(next);
     persist(next);
-    const message = typeof undoMessage === 'function' ? undoMessage(current, next) : undoMessage;
-    setUndo(message ? { board: current, message } : null);
+  }
+
+  function remember(previous, message = '') {
+    const { past, future } = history.current;
+    past.push(previous);
+    if (past.length > HISTORY_LIMIT) past.shift();
+    future.length = 0;
+    showHistoryAvailability();
+    setUndoMessage(message);
     setNotice('');
+  }
+
+  function updateBoard(updater, message = '') {
+    if (editor.current) finishEditing(editor.current.id, true);
+    const current = currentBoard();
+    const updated = updater(current);
+    if (updated === current) return;
+    const next = { ...updated, example: false };
+    remember(current, typeof message === 'function' ? message(current, next) : message);
+    saveBoard(next);
   }
 
   function toggleSidebar() {
@@ -215,7 +262,7 @@ export default function App() {
   }
 
   function downloadBackup() {
-    const current = (storageWritable.current && loadSavedBoard()) || latestBoard.current;
+    const current = currentBoard();
     const file = new Blob([JSON.stringify({ format: 'dayboard', version: 1, cards: current.cards, links: current.links ?? [] }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(file);
     const link = document.createElement('a');
@@ -274,6 +321,7 @@ export default function App() {
     setLocated(null);
     updateBoard(current => ({ ...current, cards: [...current.cards, newCard] }));
     selection.pick(id);
+    editor.current = { id, original: latestBoard.current, created: true };
     setEditing(id);
     if (parent) {
       const { x, y } = parent.nextChild;
@@ -291,26 +339,37 @@ export default function App() {
   }
 
   function editCard(id) {
+    const original = currentBoard();
+    if (!original.cards.some(card => card.id === id)) return;
     selectCard(id);
     const entry = layout.get(id);
+    editor.current = { id, original, created: false };
     setEditing(id);
     setLocated(null);
     reveal(entry.absolute, entry.width, Math.min(entry.bodyHeight + 70, 290));
   }
 
   function writeText(id, text) {
-    updateBoard(current => {
-      const existing = current.cards.find(card => card.id === id);
-      if (!existing || existing.text === text) return current;
-      return {
-        ...current, cards: current.cards.map(card => card.id === id ? { ...card, text } : card),
-      };
-    });
+    const current = currentBoard();
+    if (editor.current?.id !== id) return;
+    const next = replaceCard(current, id, { text });
+    if (next !== current) saveBoard({ ...next, example: false });
   }
 
-  function finishEditing(id, commit, original) {
-    setEditing(current => current === id ? null : current);
-    if (!commit) writeText(id, original);
+  function finishEditing(id, commit) {
+    const current = currentBoard();
+    const session = editor.current;
+    if (session?.id !== id) return;
+    editor.current = null;
+    setEditing(null);
+    const { original, created } = session;
+    const text = original.cards.find(card => card.id === id)?.text;
+    const beforeEdit = replaceCard(current, id, { text });
+    if (!commit || beforeEdit === current) {
+      if (current !== original) saveBoard(original);
+    } else if (!created) {
+      remember(original);
+    }
   }
 
   function startLink(id) {
@@ -375,7 +434,17 @@ export default function App() {
 
   useEffect(() => {
     function onKey(event) {
-      if (event.defaultPrevented || event.isComposing || editing || event.target.closest?.('input, textarea, select, [contenteditable], .data-menu')) return;
+      if (event.defaultPrevented || event.isComposing || editing || event.target.closest?.('input, textarea, [contenteditable], .data-menu')) return;
+      const key = event.key.toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+        const redo = (key === 'z' && event.shiftKey) || (key === 'y' && event.ctrlKey && !event.shiftKey);
+        if (key === 'z' || redo) {
+          event.preventDefault();
+          if (!event.repeat) restoreChange(redo);
+        }
+        return;
+      }
+      if (event.target.closest?.('select')) return;
       if (event.key === 'Escape' && (linkSource || currentLink)) {
         cancelLink();
         setSelectedLink(null);
@@ -397,7 +466,6 @@ export default function App() {
         return;
       }
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.repeat) return;
-      const key = event.key.toLowerCase();
       if (key === 'n') {
         event.preventDefault();
         createCard();
@@ -435,7 +503,7 @@ export default function App() {
   }
 
   function updateStatus(id, status) {
-    updateBoard(current => ({ ...current, cards: current.cards.map(card => card.id === id ? { ...card, status } : card) }));
+    updateBoard(current => replaceCard(current, id, { status }));
   }
 
   function finishResize(change) {
@@ -444,14 +512,14 @@ export default function App() {
     updateBoard(current => {
       const card = current.cards.find(item => item.id === change.id);
       if (!card) return current;
+      const original = layoutCards(current.cards, measurements).get(card.id);
       const resized = layoutCards(current.cards, measurements, change).get(card.id);
-      const next = {
-        ...card,
-        ...(change.width !== undefined && { width: resized.width }),
-        ...(change.height !== undefined && { height: resized.height }),
-        ...(!card.parentId && { position: resized.position }),
-      };
-      return { ...current, cards: current.cards.map(item => item.id === card.id ? next : item) };
+      const { x, y } = resized.position;
+      return replaceCard(current, card.id, {
+        ...(change.width !== undefined && original.width !== resized.width && { width: resized.width }),
+        ...(change.height !== undefined && original.height !== resized.height && { height: resized.height }),
+        ...(!card.parentId && (original.position.x !== x || original.position.y !== y) && { position: { x, y } }),
+      });
     }, 'Card resized');
   }
 
@@ -492,15 +560,26 @@ export default function App() {
     updateBoard(current => current.example ? { example: false, cards: [] } : current, 'Example cleared');
   }
 
-  function undoChange() {
-    const previous = undo.board;
-    latestBoard.current = previous;
-    setBoard(previous);
-    persist(previous);
+  function restoreChange(redo = false) {
+    if (editor.current || dragging || resizing || selection.box) return;
+    const current = currentBoard();
+    const { past, future } = history.current;
+    const from = redo ? future : past;
+    const to = redo ? past : future;
+    const restored = from.pop();
+    if (!restored) return;
+    to.push(current);
+    saveBoard(restored);
+    showHistoryAvailability();
+    selection.retain(restored.cards);
+    setLocated(null);
     setSelectedLink(null);
     cancelLink();
-    setUndo(null);
+    setNotice('');
+    setUndoMessage('');
   }
+
+  const historyBusy = Boolean(editing || dragging || resizing || selection.box);
 
   return (
     <BoardActions.Provider value={{
@@ -527,6 +606,14 @@ export default function App() {
               {savedLocally ? 'Saved in this browser' : 'Local saving unavailable'}
             </span>
             {board.example && <button className="text-button" title="Clear the example cards" onClick={clearExample}>Start fresh</button>}
+            <div className="history-controls" role="group" aria-label="Board history">
+              <button type="button" className="icon-button" aria-label="Undo board change" title="Undo (Ctrl+Z / ⌘Z)"
+                aria-keyshortcuts="Control+Z Meta+Z" disabled={historyBusy || !historyAvailability.undo}
+                onClick={() => restoreChange()}><Undo2 size={17} /></button>
+              <button type="button" className="icon-button" aria-label="Redo board change" title="Redo (Ctrl+Shift+Z / ⌘⇧Z)"
+                aria-keyshortcuts="Control+Shift+Z Control+Y Meta+Shift+Z" disabled={historyBusy || !historyAvailability.redo}
+                onClick={() => restoreChange(true)}><Redo2 size={17} /></button>
+            </div>
             <BoardData download={downloadBackup} restore={restoreBackup} />
             <button className="new-card" onClick={() => createCard()} title="New card (N)"><Plus size={18} /> Card</button>
           </div>
@@ -586,10 +673,10 @@ export default function App() {
               ? <span>{selectionCount} selected <span className="hint-dot">·</span> Delete to remove</span>
               : <span>Click to select <span className="hint-dot">·</span> Ctrl+drag to select several</span>}
             </div>}
-            {(notice || undo) && <div className="undo-toast" role="status">
-              <span>{notice || undo.message}</span>
-              {!notice && <button className="text-button" onClick={undoChange}>Undo</button>}
-              <button className="icon-button" aria-label="Dismiss message" onClick={() => { setNotice(''); setUndo(null); }}><X size={15} /></button>
+            {(notice || undoMessage) && <div className="undo-toast" role="status">
+              <span>{notice || undoMessage}</span>
+              {!notice && <button className="text-button" disabled={historyBusy} onClick={() => restoreChange()}>Undo</button>}
+              <button className="icon-button" aria-label="Dismiss message" onClick={() => { setNotice(''); setUndoMessage(''); }}><X size={15} /></button>
             </div>}
           </main>
         </div>

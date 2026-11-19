@@ -38,7 +38,10 @@ svg { flex-shrink: 0; }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 27px; font-weight: 700; letter-spacing: -.5px; }
 .brand span { padding-top: 5px; }
 .topbar-actions { display: flex; align-items: center; gap: 13px; }
-.status-legend { display: flex; align-items: center; gap: 13px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.status-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 13px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.history-controls { display: flex; gap: 2px; }
+.history-controls button:disabled { opacity: .35; cursor: default; }
+.history-controls button:disabled:hover { background: transparent; }
 .status-legend > span { display: inline-flex; align-items: center; gap: 5px; }
 .status-dot { width: 11px; height: 11px; border-radius: 50%; display: block; flex: 0 0 auto; background: var(--pill); }
 .storage-label { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; font-weight: 550; }
@@ -109,7 +112,9 @@ svg { flex-shrink: 0; }
 
 .status-todo { --card: #edf2ff; --border: #a6b9ed; --accent: #526dd9; --pill: #344eba; }
 .status-ongoing { --card: #fff0df; --border: #edba8b; --accent: #dc6b26; --pill: #a84c17; }
+.status-paused { --card: #ffe1e5; --border: #e28892; --accent: #c9253e; --pill: #b61933; }
 .status-done { --card: #e5f5eb; --border: #a1ceb2; --accent: #308e61; --pill: #166a49; }
+.status-finished { --card: #f0e4fa; --border: #c5a4e2; --accent: #8b46bd; --pill: #7835a5; }
 .status-group { --card: #fff; --border: #d5d0c7; --accent: #c7c0b5; --pill: #fff; }
 .status-group .status-dot { border: 1px solid #8c857a; }
 .note-card {
@@ -301,7 +306,8 @@ svg { flex-shrink: 0; }
   .topbar-actions { gap: 7px; }
   .brand { font-size: 23px; gap: 6px; }
   .brand img { width: 31px; height: 31px; }
-  .status-legend { order: 3; width: 100%; justify-content: center; padding-top: 2px; }
+  .status-legend { order: 3; width: 100%; justify-content: center; padding-top: 2px; gap: 3px 9px; }
+  .history-controls .icon-button { width: 28px; height: 32px; }
   .storage-label { display: none; }
   .topbar-actions .new-card, .topbar-actions .text-button { font-size: 12px; padding-inline: 6px; }
   .workspace { display: flex; flex-direction: column; }

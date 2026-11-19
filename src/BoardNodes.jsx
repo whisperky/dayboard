@@ -75,7 +75,6 @@ function CardText({ text, label, activate, edit, connecting, selected }) {
 
 function CardEditor({ initialText, onWrite, finish }) {
   const [text, setText] = useState(initialText);
-  const original = useRef(initialText);
   const field = useRef(null);
   const finished = useRef(false);
 
@@ -88,7 +87,7 @@ function CardEditor({ initialText, onWrite, finish }) {
   function complete(commit) {
     if (finished.current) return;
     finished.current = true;
-    finish(commit, original.current);
+    finish(commit);
   }
 
   return (
@@ -159,7 +158,7 @@ function CardNode({ data }) {
         <div className="card-drag-area" title="Drag card" aria-hidden="true"><GripVertical size={15} /></div>
         {isEditing
           ? <CardEditor initialText={card.text} onWrite={text => writeText(card.id, text)}
-              finish={(commit, original) => finishEditing(card.id, commit, original)} />
+            finish={commit => finishEditing(card.id, commit)} />
           : <CardText text={card.text} label={label} connecting={Boolean(linkSource)} selected={isSelected}
               activate={activate} edit={() => editCard(card.id)} />}
         {!isEditing && singleId === card.id && <ConnectionDot id={card.id} label={label} active={linkSource === card.id}
