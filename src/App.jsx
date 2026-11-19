@@ -403,12 +403,13 @@ export default function App() {
           <ResumePanel cards={board.cards} locateCard={locateCard} hidden={sidebarHidden} />
           <main className="canvas" ref={canvas} aria-label="Card canvas"
             {...selection.handlers}
+            onContextMenu={event => event.preventDefault()}
             onDoubleClick={paneDoubleClick}
             onPointerCancel={() => { selection.cancel(); setDropTarget(null); setDragging(null); }}>
             <ReactFlow nodes={nodes} edges={[]} nodeTypes={nodeTypes} onNodesChange={applyChanges}
               onNodeDragStart={(_, node) => { setDragging(node.id); setLocated(null); }}
               onNodeDrag={moveNode} onNodeDragStop={finishDrag} onPaneClick={paneClick}
-              paneClickDistance={5} nodeDragThreshold={4} nodeClickDistance={4}
+              panOnDrag={[0, 2]} paneClickDistance={5} nodeDragThreshold={4} nodeClickDistance={4}
               defaultViewport={initialView.viewport} onMoveEnd={saveViewport}
               onMoveStart={() => canvas.current?.querySelector('.card-menu:popover-open')?.hidePopover()}
               minZoom={0.2} maxZoom={2.2} deleteKeyCode={null} elementsSelectable={false}

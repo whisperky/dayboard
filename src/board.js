@@ -10,6 +10,7 @@ export const statuses = {
   todo: 'To do',
   ongoing: 'Ongoing',
   done: 'Done',
+  group: 'Group',
 };
 
 const sampleBoard = {

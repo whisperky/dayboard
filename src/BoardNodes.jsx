@@ -99,14 +99,15 @@ function CardEditor({ initialText, onWrite, finish }) {
 
   return (
     <div className="card-editor nodrag nopan nowheel handwritten" data-text={text}>
-      <textarea ref={field} aria-label="Card text" rows={1} placeholder="Write something…" value={text}
+      <textarea ref={field} aria-label="Card text" aria-description="Enter to finish, Shift+Enter for a new line"
+        rows={1} placeholder="Write something…" value={text}
         onChange={event => {
           setText(event.target.value);
           onWrite(event.target.value);
         }} onBlur={() => complete(true)}
         onKeyDown={event => {
           if (event.nativeEvent.isComposing) return;
-          if (event.key === 'Escape' || (event.key === 'Enter' && (event.ctrlKey || event.metaKey))) {
+          if (event.key === 'Escape' || (event.key === 'Enter' && !event.shiftKey)) {
             event.preventDefault();
             event.stopPropagation();
             complete(event.key === 'Enter');
