@@ -112,7 +112,7 @@ svg { flex-shrink: 0; }
 
 .status-todo { --card: #edf2ff; --border: #a6b9ed; --accent: #526dd9; --pill: #344eba; }
 .status-ongoing { --card: #fff0df; --border: #edba8b; --accent: #dc6b26; --pill: #a84c17; }
-.status-paused { --card: #ffe1e5; --border: #e28892; --accent: #c9253e; --pill: #b61933; }
+.status-paused { --card: #b91d38; --border: #851027; --accent: #741024; --pill: var(--card); }
 .status-done { --card: #e5f5eb; --border: #a1ceb2; --accent: #308e61; --pill: #166a49; }
 .status-finished { --card: #f0e4fa; --border: #c5a4e2; --accent: #8b46bd; --pill: #7835a5; }
 .status-group { --card: #fff; --border: #d5d0c7; --accent: #c7c0b5; --pill: #fff; }
@@ -223,6 +223,15 @@ svg { flex-shrink: 0; }
 .dragging .card-drag-area { cursor: grabbing; }
 .card-drag-area svg { opacity: 0; }
 .note-card:is(:hover, :focus-within, .area-selected) .card-drag-area svg { opacity: 1; }
+
+.note-card.status-paused > .card-body { color: #fff; }
+.note-card.status-paused :is(.markdown-link, .card-drag-area, .card-editor textarea) { color: inherit; }
+.note-card.status-paused .placeholder,
+.note-card.status-paused .card-editor textarea::placeholder { color: #fff0f3; }
+.note-card.status-paused :is(.card-copy, .card-drag-area):hover { background: #47000e29; }
+.note-card.status-paused :is(.card-copy code, .card-editor) { background: #47000e45; }
+.note-card.status-paused .card-copy:focus-visible { outline-color: #fff; }
+
 .connection-dot {
   position: absolute;
   top: 50%;
