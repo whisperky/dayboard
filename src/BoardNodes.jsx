@@ -1,7 +1,8 @@
 import React, { createContext, memo, useContext, useId, useLayoutEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
-import { Check, Circle, Ellipsis, GripVertical, Plus, Trash2 } from 'lucide-react';
+import { Handle, Position } from '@xyflow/react';
+import { Check, Circle, Ellipsis, GripVertical, Link2, Plus, Trash2 } from 'lucide-react';
 import { CardResize } from './CardResize.jsx';
 import { cardLabel, insertionLine, statuses } from './board.js';
 
@@ -19,7 +20,7 @@ export function StatusIcon({ status, size = 14 }) {
   return <Circle size={size - 1} strokeWidth={2.1} />;
 }
 
-function CardActions({ card, label, changeStatus, addChild, remove }) {
+function CardActions({ card, label, changeStatus, connect, addChild, remove }) {
   const id = useId();
   const trigger = useRef(null);
   const menu = useRef(null);
@@ -54,6 +55,7 @@ function CardActions({ card, label, changeStatus, addChild, remove }) {
           </button>
         ))}
         <div className="card-menu-divider" />
+        <button type="button" onClick={() => run(connect)}><Link2 size={15} /> Connect to a card</button>
         <button type="button" onClick={() => run(addChild)}><Plus size={15} /> Add nested card</button>
         <button type="button" className="card-menu-remove" onClick={() => run(remove)}><Trash2 size={14} /> Delete card</button>
       </div>
@@ -65,13 +67,14 @@ const MarkdownText = memo(function MarkdownText({ text }) {
   return <ReactMarkdown skipHtml remarkPlugins={markdownPlugins} components={markdownComponents}>{text}</ReactMarkdown>;
 });
 
-function CardText({ text, label, edit }) {
+function CardText({ text, label, activate, connecting }) {
   return (
-    <div className="card-copy handwritten nodrag nopan" role="button" tabIndex={0} aria-label={'Edit card: ' + label}
-      onClick={edit} onKeyDown={event => {
+    <div className="card-copy handwritten nodrag nopan" role="button" tabIndex={0}
+      aria-label={(connecting ? 'Connect to ' : 'Edit card: ') + label}
+      onClick={activate} onKeyDown={event => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
-          edit();
+          activate();
         }
       }}>
       {text ? <MarkdownText text={text} /> : <span className="placeholder">Write something…</span>}
@@ -122,7 +125,7 @@ function CardNode({ data }) {
   const { card, width } = entry;
   const {
     editing, createCard, editCard, writeText, finishEditing, updateStatus, remove, measure,
-    dropTarget, dragging, located, selected, resizing, previewResize, finishResize,
+    dropTarget, dragging, located, selected, resizing, previewResize, finishResize, linkSource, startLink, finishLink, linkProblem,
   } = useContext(BoardActions);
   const isEditing = editing === card.id;
   const isCarried = dragging === card.id || entry.ancestors.includes(dragging);
@@ -144,24 +147,32 @@ function CardNode({ data }) {
     receiving && 'receiving',
     isCarried && 'carried',
     resizing === card.id && 'resizing',
+    linkSource === card.id && 'link-source',
+    linkSource && linkSource !== card.id && (linkProblem(card.id) ? 'link-unavailable' : 'link-target'),
     selected.has(card.id) && 'area-selected',
     located === card.id && 'located',
     entry.children.length && 'has-children',
   ].filter(Boolean).join(' ');
 
   return (
-    <article className={'note-card status-' + card.status + ' ' + stateClasses} style={{ height: entry.height }}>
+    <article className={'note-card status-' + card.status + ' ' + stateClasses} style={{ height: entry.height }}
+      onClick={linkSource ? event => {
+        if (!event.target.closest('.card-copy, .card-actions, .card-drag-area, button')) finishLink(card.id);
+      } : undefined}>
+      <Handle type="source" position={Position.Right} isConnectable={false} className="card-edge-anchor" />
+      <Handle type="target" position={Position.Left} isConnectable={false} className="card-edge-anchor" />
       <div className="card-body" ref={body}>
         <div className="card-drag-area" title="Drag card" aria-hidden="true"><GripVertical size={15} /></div>
         {isEditing
           ? <CardEditor initialText={card.text} onWrite={text => writeText(card.id, text)}
               finish={(commit, original) => finishEditing(card.id, commit, original)} />
-          : <CardText text={card.text} label={label} edit={() => editCard(card.id)} />}
+          : <CardText text={card.text} label={label} connecting={Boolean(linkSource)}
+              activate={() => linkSource ? finishLink(card.id) : editCard(card.id)} />}
         <CardActions card={card} label={label} changeStatus={value => updateStatus(card.id, value)}
-          addChild={() => createCard(card.id)} remove={() => remove(card.id)} />
+          connect={() => startLink(card.id)} addChild={() => createCard(card.id)} remove={() => remove(card.id)} />
       </div>
       {receiving && <div className="drop-line" style={{ top: insertionLine(entry, dropTarget.slot) }} />}
-      {!isEditing && <CardResize entry={entry} label={label} preview={previewResize} finish={finishResize} />}
+      {!isEditing && !linkSource && <CardResize entry={entry} label={label} preview={previewResize} finish={finishResize} />}
     </article>
   );
 }
@@ -178,7 +189,7 @@ export function getNodes(layout) {
     initialWidth: entry.width,
     initialHeight: entry.height,
     style: { width: entry.width, pointerEvents: 'auto', '--card-layer': entry.layer },
-    zIndex: entry.layer,
+    zIndex: entry.layer * 2,
     ariaLabel: entry.card.text.trim() ? cardLabel(entry.card.text) + ' card' : 'Untitled card',
     data: { entry },
   }));

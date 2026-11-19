@@ -124,6 +124,14 @@ svg { flex-shrink: 0; }
 .note-card.has-children > .card-body { border-bottom: 1px dashed var(--border); }
 .note-card.receiving, .note-card.located { outline: 2px solid var(--purple); outline-offset: 2px; }
 .note-card.area-selected { outline: 2px solid var(--purple); outline-offset: 3px; }
+.card-edge-anchor { visibility: hidden; pointer-events: none; }
+.note-card.link-source { outline: 2px solid var(--purple); outline-offset: 3px; }
+.note-card.link-source .card-copy, .note-card.link-unavailable .card-copy { cursor: not-allowed; }
+.note-card.link-target .card-copy { cursor: crosshair; }
+.note-card.link-target:is(:hover, :focus-within) { outline: 2px dashed var(--purple); outline-offset: 2px; }
+.react-flow__edge .link-stroke { stroke: #8277a2; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.react-flow__edge:is(:hover, :focus-visible) .link-stroke, .react-flow__edge .link-selected { stroke: var(--purple); stroke-width: 3; }
+.react-flow__edge-cardConnection { cursor: pointer; }
 .area-selection { position: absolute; z-index: 12500; pointer-events: none; border: 1px solid var(--purple); background: #6750db33; }
 .resize-edge {
   position: absolute;
@@ -244,7 +252,7 @@ svg { flex-shrink: 0; }
 .empty-icon { width: 48px; height: 48px; margin: 0 auto 10px; display: grid; place-items: center; border-radius: 12px; color: var(--purple-dark); background: #efebff; }
 .empty-board h1 { font-size: 30px; line-height: 1.2; }
 
-.canvas-hint, .zoom-controls, .undo-toast {
+.canvas-hint, .zoom-controls, .undo-toast, .connection-tools {
   position: absolute;
   z-index: 13000;
   display: flex;
@@ -261,6 +269,8 @@ svg { flex-shrink: 0; }
 .zoom-controls .fit-button { border-left: 1px solid var(--line); border-radius: 0 5px 5px 0; }
 .undo-toast { bottom: 55px; left: 13px; padding: 4px 5px 4px 10px; gap: 7px; font-size: 14px; }
 .undo-toast .icon-button { width: 26px; height: 26px; }
+.connection-tools { top: 13px; left: 13px; max-width: calc(100% - 26px); padding: 5px 6px 5px 10px; gap: 8px; font-size: 14px; }
+.connection-tools > svg { color: var(--purple-dark); }
 
 @media (max-width: 1000px) { .workspace { grid-template-columns: 202px minmax(0, 1fr); } }
 @media (max-width: 700px) {

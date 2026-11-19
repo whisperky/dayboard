@@ -75,8 +75,49 @@ export function loadBoard() {
 
 export function loadSavedBoard() {
   const saved = readLocal(STORAGE_KEY);
-  if (Array.isArray(saved?.cards)) return saved.example ? sampleBoard : saved;
-  return null;
+  if (!Array.isArray(saved?.cards)) return null;
+  return saved.example ? sampleBoard : { ...saved, links: normalizeLinks(saved.cards, saved.links) };
+}
+
+export function linkId(source, target) {
+  return source < target ? source + ':' + target : target + ':' + source;
+}
+
+export function sharesHierarchy(a, b) {
+  return a.ancestors.includes(b.card.id) || b.ancestors.includes(a.card.id);
+}
+
+function linksAllowed(byId, source, target) {
+  if (source === target || !byId.has(source) || !byId.has(target)) return false;
+  function hasAncestor(id, ancestor) {
+    for (let parent = byId.get(id)?.parentId; parent; parent = byId.get(parent)?.parentId) {
+      if (parent === ancestor) return true;
+    }
+    return false;
+  }
+  return !hasAncestor(source, target) && !hasAncestor(target, source);
+}
+
+function normalizeLinks(cards, links) {
+  if (!Array.isArray(links) || !links.length) return [];
+  const byId = new Map(cards.map(card => [card.id, card]));
+  const unique = new Map();
+  for (const link of links) {
+    if (!link || !linksAllowed(byId, link.source, link.target)) continue;
+    const [source, target] = [link.source, link.target].sort();
+    unique.set(linkId(source, target), { source, target });
+  }
+  return [...unique.values()];
+}
+
+export function addLink(board, source, target) {
+  const current = board.links ?? [];
+  const next = normalizeLinks(board.cards, [...current, { source, target }]);
+  return next.length > current.length ? { ...board, links: next } : board;
+}
+
+function withHierarchy(board, cards) {
+  return { ...board, cards, links: normalizeLinks(cards, board.links) };
 }
 
 export function readBackup(text) {
@@ -109,13 +150,14 @@ export function readBackup(text) {
     }
     for (const id of path) validated.add(id);
   }
-  return [...cards.values()];
+  const imported = [...cards.values()];
+  return { cards: imported, links: normalizeLinks(imported, backup.links) };
 }
 
-export function importBackup(board, cards) {
+export function importBackup(board, { cards, links }) {
   const imported = new Set(cards.map(card => card.id));
   const remaining = board.example ? [] : board.cards.filter(card => !imported.has(card.id));
-  return { example: false, cards: [...remaining, ...cards] };
+  return withHierarchy({ example: false, links: [...(board.links ?? []), ...links] }, [...remaining, ...cards]);
 }
 
 export function cardLines(text) {
@@ -276,7 +318,7 @@ export function placeCard(board, layout, id, target, position) {
   const nested = { ...card, parentId: parent.card.id };
   delete nested.position;
   cards.splice(index, 0, nested);
-  return { ...board, cards };
+  return withHierarchy(board, cards);
 }
 
 export function removeCard(board, layout, id) {
@@ -315,10 +357,7 @@ export function removeCards(board, layout, selected) {
     return [{ ...card, parentId, position }];
   }
 
-  return {
-    ...board,
-    cards: board.cards.flatMap(card => selected.has(card.parentId) ? [] : promote(card, card.parentId)),
-  };
+  return withHierarchy(board, board.cards.flatMap(card => selected.has(card.parentId) ? [] : promote(card, card.parentId)));
 }
 
 export function insertionLine(entry, slot) {

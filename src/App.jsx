@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Background, ReactFlow, getViewportForBounds, useNodesState, useReactFlow, useViewport } from '@xyflow/react';
-import { Archive, CloudOff, LocateFixed, Maximize, Minus, PanelLeft, Plus, Type, X } from 'lucide-react';
+import { Archive, CloudOff, Link2, LocateFixed, Maximize, Minus, PanelLeft, Plus, Type, X } from 'lucide-react';
 import { BoardActions, StatusIcon, getNodes, nodeTypes } from './BoardNodes.jsx';
+import { edgeTypes, getEdges } from './CardConnection.jsx';
 import { useAreaSelection } from './useAreaSelection.js';
 import {
-  CARD_WIDTH, STORAGE_KEY, availablePosition, boardBounds, cardLines, getDropTarget, importBackup,
-  layoutCards, loadBoard, loadSavedBoard, placeCard, readBackup, readLocal, removeCard, removeCards, statuses,
+  CARD_WIDTH, STORAGE_KEY, addLink, availablePosition, boardBounds, cardLines, getDropTarget, importBackup,
+  layoutCards, linkId, loadBoard, loadSavedBoard, placeCard, readBackup, readLocal, removeCard, removeCards, sharesHierarchy, statuses,
 } from './board.js';
 
 const fitOptions = { padding: 0.15, maxZoom: 1.04 };
@@ -93,6 +94,8 @@ export default function App() {
   const [dropTarget, setDropTarget] = useState(null);
   const [dragging, setDragging] = useState(null);
   const [resizing, setResizing] = useState(null);
+  const [linking, setLinking] = useState(null);
+  const [selectedLink, setSelectedLink] = useState(null);
   const [located, setLocated] = useState(null);
   const [undo, setUndo] = useState(null);
   const [notice, setNotice] = useState('');
@@ -109,6 +112,9 @@ export default function App() {
   });
 
   const layout = useMemo(() => layoutCards(board.cards, measurements, resizing), [board, measurements, resizing]);
+  const linkSource = layout.has(linking?.source) ? linking.source : null;
+  const edges = useMemo(() => getEdges(board.links, layout, selectedLink), [board.links, layout, selectedLink]);
+  const currentLink = edges.find(edge => edge.id === selectedLink);
   const graph = useMemo(() => getNodes(layout), [layout]);
   const [nodes, setNodes, applyChanges] = useNodesState(graph);
   const canvas = useRef(null);
@@ -169,7 +175,8 @@ export default function App() {
     latestBoard.current = next;
     setBoard(next);
     persist(next);
-    setUndo(undoMessage ? { board: current, message: undoMessage } : null);
+    const message = typeof undoMessage === 'function' ? undoMessage(current, next) : undoMessage;
+    setUndo(message ? { board: current, message } : null);
     setNotice('');
   }
 
@@ -185,7 +192,7 @@ export default function App() {
 
   function downloadBackup() {
     const current = (storageWritable.current && loadSavedBoard()) || latestBoard.current;
-    const file = new Blob([JSON.stringify({ format: 'dayboard', version: 1, cards: current.cards }, null, 2)], { type: 'application/json' });
+    const file = new Blob([JSON.stringify({ format: 'dayboard', version: 1, cards: current.cards, links: current.links ?? [] }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(file);
     const link = document.createElement('a');
     link.href = url;
@@ -196,9 +203,11 @@ export default function App() {
 
   async function restoreBackup(file) {
     try {
-      const cards = readBackup(await file.text());
-      fitPending.current = cards.length ? 180 : null;
-      updateBoard(current => importBackup(current, cards), 'Backup imported');
+      const backup = readBackup(await file.text());
+      fitPending.current = backup.cards.length ? 180 : null;
+      setLinking(null);
+      setSelectedLink(null);
+      updateBoard(current => importBackup(current, backup), 'Backup imported');
     } catch {
       setNotice('Could not open this Dayboard backup.');
     }
@@ -226,6 +235,8 @@ export default function App() {
 
   function createCard(parentId = null, point = null) {
     selection.clear();
+    setLinking(null);
+    setSelectedLink(null);
     const bounds = canvas.current.getBoundingClientRect();
     const zoom = flow.getZoom();
     const origin = flow.screenToFlowPosition(point || {
@@ -250,6 +261,7 @@ export default function App() {
 
   function editCard(id) {
     selection.clear();
+    setSelectedLink(null);
     const entry = layout.get(id);
     setEditing(id);
     setLocated(null);
@@ -271,9 +283,67 @@ export default function App() {
     if (!commit) writeText(id, original);
   }
 
+  function startLink(id) {
+    selection.clear();
+    setSelectedLink(null);
+    setLinking({ source: id });
+  }
+
+  function linkProblem(id) {
+    if (id === linkSource) return 'Choose a different card.';
+    const source = layout.get(linkSource);
+    const target = layout.get(id);
+    if (!source || !target) return 'Choose a card on the board.';
+    if (sharesHierarchy(source, target)) return 'These cards are already grouped in the same parent chain.';
+    if (edges.some(edge => edge.id === linkId(linkSource, id))) return 'These cards already have a connection.';
+    return '';
+  }
+
+  function finishLink(id) {
+    const error = linkProblem(id);
+    if (error) {
+      setLinking({ source: linkSource, error });
+      return;
+    }
+    updateBoard(current => addLink(current, linkSource, id), 'Cards connected');
+    setLinking(null);
+  }
+
+  function changeEdgeSelection(changes) {
+    for (const change of changes) {
+      if (change.type !== 'select') continue;
+      if (change.selected) {
+        setLinking(null);
+        selection.clear();
+        setSelectedLink(change.id);
+      } else {
+        setSelectedLink(current => current === change.id ? null : current);
+      }
+    }
+  }
+
+  function removeLink() {
+    if (!currentLink) return;
+    const { id } = currentLink;
+    updateBoard(current => ({
+      ...current, links: (current.links ?? []).filter(link => linkId(link.source, link.target) !== id),
+    }), 'Connection removed');
+    setSelectedLink(null);
+  }
+
   useEffect(() => {
     function onKey(event) {
       if (event.defaultPrevented || editing || event.target.closest?.('input, textarea, select, [contenteditable], .card-menu')) return;
+      if (event.key === 'Escape' && (linkSource || currentLink)) {
+        setLinking(null);
+        setSelectedLink(null);
+        return;
+      }
+      if (currentLink && (event.key === 'Delete' || event.key === 'Backspace')) {
+        event.preventDefault();
+        removeLink();
+        return;
+      }
       if (selectionCount && (event.key === 'Delete' || event.key === 'Backspace')) {
         event.preventDefault();
         updateBoard(current => removeCards(current, layout, selection.selected),
@@ -298,6 +368,8 @@ export default function App() {
 
   function paneClick() {
     selection.clear();
+    setLinking(null);
+    setSelectedLink(null);
     canvas.current.querySelector('.card-editor textarea')?.blur();
   }
 
@@ -356,7 +428,11 @@ export default function App() {
       ? { x: node.position.x + parent.absolute.x, y: node.position.y + parent.absolute.y }
       : node.position;
     const target = targetUnderPointer(event, node.id);
-    updateBoard(current => placeCard(current, layout, node.id, target, position));
+    updateBoard(current => placeCard(current, layout, node.id, target, position), (current, next) => {
+      const removed = (current.links?.length ?? 0) - (next.links?.length ?? 0);
+      if (removed <= 0) return null;
+      return removed === 1 ? 'Grouping replaced a connection' : 'Grouping replaced ' + removed + ' connections';
+    });
   }
 
   function clearExample() {
@@ -368,6 +444,8 @@ export default function App() {
     latestBoard.current = previous;
     setBoard(previous);
     persist(previous);
+    setSelectedLink(null);
+    setLinking(null);
     setUndo(null);
   }
 
@@ -376,6 +454,7 @@ export default function App() {
       editing, createCard, editCard, writeText, finishEditing, updateStatus,
       remove, measure, dropTarget, dragging, located, selected: selection.selected,
       resizing: resizing?.id, previewResize: setResizing, finishResize,
+      linkSource, startLink, finishLink, linkProblem,
     }}>
       <div className="app">
         <header className="topbar">
@@ -403,10 +482,18 @@ export default function App() {
           <ResumePanel cards={board.cards} locateCard={locateCard} hidden={sidebarHidden} />
           <main className="canvas" ref={canvas} aria-label="Card canvas"
             {...selection.handlers}
+            onPointerDownCapture={event => {
+              if (event.ctrlKey && event.button === 0) {
+                setLinking(null);
+                setSelectedLink(null);
+              }
+              selection.handlers.onPointerDownCapture(event);
+            }}
             onContextMenu={event => event.preventDefault()}
             onDoubleClick={paneDoubleClick}
             onPointerCancel={() => { selection.cancel(); setDropTarget(null); setDragging(null); }}>
-            <ReactFlow nodes={nodes} edges={[]} nodeTypes={nodeTypes} onNodesChange={applyChanges}
+            <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+              zIndexMode="manual" onNodesChange={applyChanges} onEdgesChange={changeEdgeSelection}
               onNodeDragStart={(_, node) => { setDragging(node.id); setLocated(null); }}
               onNodeDrag={moveNode} onNodeDragStop={finishDrag} onPaneClick={paneClick}
               panOnDrag={[0, 2]} paneClickDistance={5} nodeDragThreshold={4} nodeClickDistance={4}
@@ -417,6 +504,13 @@ export default function App() {
               <Background gap={22} size={1.35} color="#cfc9bd" />
               <ZoomControls />
             </ReactFlow>
+            {(linkSource || currentLink) && <div className="connection-tools">
+              <Link2 size={15} aria-hidden="true" />
+              <span role="status">{linkSource ? linking.error || 'Choose another card to connect' : 'Connection selected'}</span>
+              <button type="button" className="text-button" onClick={linkSource ? () => setLinking(null) : removeLink}>
+                {linkSource ? 'Cancel' : 'Remove'}
+              </button>
+            </div>}
             {selection.box && <div className="area-selection" aria-hidden="true" style={selection.box} />}
             {!board.cards.length && <div className="empty-board">
               <div className="empty-icon"><Type size={27} /></div>
