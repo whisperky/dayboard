@@ -1,7 +1,10 @@
+param([switch]$ShareWithTalentee)
+
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $node = (Get-Command node.exe | Select-Object -First 1).Source
 $server = Join-Path $PSScriptRoot 'serve-local.mjs'
+$launcher = Join-Path $PSScriptRoot 'launch-local.vbs'
 $taskName = 'Dayboard localhost'
 
 if (-not (Test-Path -LiteralPath (Join-Path $root 'dist/index.html'))) {
@@ -9,35 +12,51 @@ if (-not (Test-Path -LiteralPath (Join-Path $root 'dist/index.html'))) {
 }
 
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$powerShell = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
-$nodeArg = $node.Replace("'", "''")
-$serverArg = $server.Replace("'", "''")
-$command = "& '$nodeArg' '$serverArg'; exit `$LASTEXITCODE"
-$action = New-ScheduledTaskAction -Execute $powerShell -WorkingDirectory $root -Argument (
-  '-NoProfile -NonInteractive -WindowStyle Hidden -Command "' + $command + '"'
-)
+$existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if (-not $PSBoundParameters.ContainsKey('ShareWithTalentee')) {
+  $ShareWithTalentee = $existing.Actions.Arguments -match '(?:^| )--share-with-talentee(?: |$)'
+}
+$wscript = Join-Path $env:SystemRoot 'System32/wscript.exe'
+$arguments = '//B //NoLogo "{0}" "{1}" "{2}"' -f $launcher, $node, $server
+if ($ShareWithTalentee) { $arguments += ' --share-with-talentee' }
+$action = New-ScheduledTaskAction -Execute $wscript -WorkingDirectory $root -Argument $arguments
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) `
   -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
-$existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-$listener = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
-if ($listener) {
-  $owner = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $listener.OwningProcess)
-  if ($owner.Name -eq 'node.exe' -and $owner.CommandLine -match [regex]::Escape($server)) {
-    if ($existing.State -eq 'Running') {
-      Write-Output 'Dayboard address: http://dayboard.localhost:8080/'
-      return
+$bindings = @(
+  @{ Address = '127.0.0.1'; Port = 8080 },
+  @{ Address = '127.0.0.1'; Port = 80 },
+  @{ Address = '::1'; Port = 80 }
+)
+$previous = foreach ($binding in $bindings) {
+  foreach ($listener in (Get-NetTCPConnection -LocalAddress $binding.Address -LocalPort $binding.Port -State Listen -ErrorAction SilentlyContinue)) {
+    $owner = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $listener.OwningProcess)
+    if ($owner.Name -ne 'node.exe' -or $owner.CommandLine -notmatch [regex]::Escape($server)) {
+      throw ('{0} port {1} is already in use by another process.' -f $binding.Address, $binding.Port)
     }
-    Stop-Process -Id $owner.ProcessId
-  } else {
-    throw 'Port 8080 is already in use by another process.'
+    $owner.ProcessId
   }
 }
 if ($existing.State -eq 'Running') {
   Stop-ScheduledTask -TaskName $taskName
 }
+foreach ($processId in ($previous | Sort-Object -Unique)) {
+  $owner = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $processId)
+  if ($owner.Name -eq 'node.exe' -and $owner.CommandLine -match [regex]::Escape($server)) {
+    Stop-Process -Id $processId
+  }
+}
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
-Write-Output 'Dayboard address: http://dayboard.localhost:8080/'
+
+for ($attempt = 0; $attempt -lt 20; $attempt++) {
+  $page = & curl.exe --noproxy '*' --max-time 1 --fail --silent 'http://dayboard.localhost/'
+  if ($LASTEXITCODE -eq 0 -and $page -match '<title>Dayboard</title>') {
+    Write-Output 'Dayboard address: http://dayboard.localhost/'
+    return
+  }
+  Start-Sleep -Milliseconds 250
+}
+throw 'Dayboard did not respond on the local domain. Check the Dayboard localhost task in Task Scheduler.'
